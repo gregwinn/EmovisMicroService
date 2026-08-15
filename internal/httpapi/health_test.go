@@ -17,12 +17,21 @@ import (
 	"github.com/gregwinn/EmovisMicroService/internal/platform/health"
 )
 
-func testRouter(checker *health.Checker) http.Handler {
-	return NewRouter(Deps{
+func testRouter(t *testing.T, checker *health.Checker) http.Handler {
+	t.Helper()
+	router, err := NewRouter(Deps{
 		Logger:  slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Health:  checker,
 		Version: "test",
 	})
+	require.NoError(t, err)
+	return router
+}
+
+// noChecks is a Checker with no dependencies registered, for tests that care
+// about routing or validation rather than readiness.
+func noChecks() *health.Checker {
+	return health.New(time.Second)
 }
 
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
@@ -38,7 +47,7 @@ func TestLivenessIgnoresFailingDependencies(t *testing.T) {
 	checker := health.New(time.Second)
 	checker.Register("database", func(context.Context) error { return errors.New("connection refused") })
 
-	rec := get(t, testRouter(checker), "/healthz")
+	rec := get(t, testRouter(t, checker), "/healthz")
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
@@ -51,7 +60,7 @@ func TestReadinessReportsUpWhenDependenciesPass(t *testing.T) {
 	checker := health.New(time.Second)
 	checker.Register("database", func(context.Context) error { return nil })
 
-	rec := get(t, testRouter(checker), "/readyz")
+	rec := get(t, testRouter(t, checker), "/readyz")
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
@@ -66,7 +75,7 @@ func TestReadinessReturns503WhenADependencyIsDown(t *testing.T) {
 	checker.Register("database", func(context.Context) error { return nil })
 	checker.Register("queue", func(context.Context) error { return errors.New("connection refused") })
 
-	rec := get(t, testRouter(checker), "/readyz")
+	rec := get(t, testRouter(t, checker), "/readyz")
 
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 
@@ -79,7 +88,7 @@ func TestReadinessReturns503WhenADependencyIsDown(t *testing.T) {
 // Probe endpoints are GET-only; the stdlib mux enforces the method from the
 // route pattern.
 func TestProbesRejectNonGET(t *testing.T) {
-	h := testRouter(health.New(time.Second))
+	h := testRouter(t, health.New(time.Second))
 
 	for _, path := range []string{"/healthz", "/readyz"} {
 		t.Run(path, func(t *testing.T) {
@@ -91,13 +100,13 @@ func TestProbesRejectNonGET(t *testing.T) {
 }
 
 func TestUnknownRouteReturns404(t *testing.T) {
-	rec := get(t, testRouter(health.New(time.Second)), "/nope")
+	rec := get(t, testRouter(t, health.New(time.Second)), "/nope")
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 // Every response carries a correlation id, including probes, so an operator
 // chasing a failing check has something to search on.
 func TestResponsesCarryCorrelationID(t *testing.T) {
-	rec := get(t, testRouter(health.New(time.Second)), "/healthz")
+	rec := get(t, testRouter(t, health.New(time.Second)), "/healthz")
 	assert.NotEmpty(t, rec.Header().Get("X-Request-Id"))
 }
