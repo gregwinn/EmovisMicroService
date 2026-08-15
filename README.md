@@ -90,6 +90,8 @@ rather than one per restart.
 | `MAX_CLOCK_SKEW` | `5m` | How far ahead of now `transaction_time_utc` may be. There is no bound on the past. |
 | `DATABASE_URL` | _(unset)_ | PostgreSQL connection string. **Unset falls back to a non-durable in-memory store.** |
 | `DATABASE_MAX_CONNS` | `10` | Connection pool ceiling |
+| `OUTBOX_BATCH_SIZE` | `100` | Events claimed per relay pass |
+| `OUTBOX_POLL_INTERVAL` | `2s` | Wait after an empty pass; a non-empty pass retries at once |
 
 ---
 
@@ -98,6 +100,9 @@ rather than one per restart.
 ```
 api/            OpenAPI contract — the source of truth for the wire format
 cmd/            One directory per binary
+  transaction-api/  the HTTP service
+  migrate/          database migrations, run as a deploy step
+  outbox-relay/     publishes accepted transactions downstream
 internal/
   config/       Environment configuration, validated at startup
   httpapi/      Routing, middleware, and HTTP-to-domain adapters
@@ -194,7 +199,7 @@ rather than `git flow finish`, so every change gets CI and a reviewable diff.
 - [x] Transaction domain model and semantic validation
 - [x] Idempotent ingest with divergence detection
 - [x] Postgres persistence with database-enforced idempotency
-- [ ] Transactional outbox and publisher
+- [x] Transactional outbox and relay
 - [ ] Metrics and PII-safe logging
 - [ ] Docker Compose stack and Terraform deployment
 - [ ] Architecture decision records and runbook
