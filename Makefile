@@ -78,12 +78,16 @@ generate-check: generate ## Fail if committed generated code has drifted from th
 ##@ Testing
 
 .PHONY: test
-test: ## Run all tests with the race detector
+test: ## Run all tests with the race detector (integration tests need Docker)
 	$(GO) test -race -count=1 ./...
 
 .PHONY: test-short
-test-short: ## Run only fast tests (skips anything needing Docker)
+test-short: ## Run only unit tests (skips anything needing Docker)
 	$(GO) test -short -count=1 ./...
+
+.PHONY: test-integration
+test-integration: ## Run only the integration tests (requires Docker)
+	$(GO) test -race -count=1 -run 'Test' ./internal/store/postgres/...
 
 .PHONY: cover
 cover: ## Run tests and enforce the coverage threshold
@@ -105,6 +109,16 @@ cover-html: cover ## Open the coverage report in a browser
 .PHONY: vuln
 vuln: ## Check dependencies and the toolchain for known vulnerabilities
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+##@ Database
+
+.PHONY: migrate
+migrate: ## Apply pending database migrations (needs DATABASE_URL)
+	$(GO) run ./cmd/migrate up
+
+.PHONY: migrate-status
+migrate-status: ## Show applied and pending migrations
+	$(GO) run ./cmd/migrate status
 
 ##@ Build
 

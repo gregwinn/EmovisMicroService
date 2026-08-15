@@ -62,8 +62,9 @@ curl -s localhost:8080/ingest/v1/transactions -H 'Content-Type: application/json
 curl -s localhost:8080/ingest/v1/transactions -H 'Content-Type: application/json' -d "$BODY" | jq
 ```
 
-> **Note:** the default store is in-memory, so nothing survives a restart.
-> Postgres replaces it behind the same interface.
+> **Note:** with no `DATABASE_URL` set the service uses an in-memory store, so
+> nothing survives a restart. It logs a warning saying so. Point `DATABASE_URL`
+> at PostgreSQL and run `make migrate` for durable ingest.
 
 ---
 
@@ -87,6 +88,8 @@ rather than one per restart.
 | `TRANSACTION_TYPES` | `toll,violation,fee` | Accepted billable event types — operator configuration, not a compiled enum |
 | `DEFAULT_CURRENCY` | `USD` | Applied when a producer omits `currency` |
 | `MAX_CLOCK_SKEW` | `5m` | How far ahead of now `transaction_time_utc` may be. There is no bound on the past. |
+| `DATABASE_URL` | _(unset)_ | PostgreSQL connection string. **Unset falls back to a non-durable in-memory store.** |
+| `DATABASE_MAX_CONNS` | `10` | Connection pool ceiling |
 
 ---
 
@@ -135,10 +138,32 @@ breakdown:
 ## Development
 
 ```bash
-make test         # race detector on everything
-make cover        # coverage report, enforced against a threshold
-make lint         # golangci-lint, pinned to the same version CI uses
+make test             # race detector on everything
+make test-short       # unit tests only — no Docker required
+make test-integration # PostgreSQL integration tests via testcontainers
+make cover            # coverage report, enforced against a threshold
+make lint             # golangci-lint, pinned to the same version CI uses
 ```
+
+Integration tests start a real PostgreSQL container with
+[testcontainers](https://golang.testcontainers.org/), because the behaviour
+under test *is* database behaviour — the idempotency guarantee lives in a unique
+constraint and `ON CONFLICT` semantics, and a mock would only assert that the
+code calls the code.
+
+<details>
+<summary><strong>Troubleshooting:</strong> <code>unable to find network with name or ID bridge</code></summary>
+
+If Podman is installed alongside Docker Desktop, testcontainers may resolve to
+the Podman socket, which has no `bridge` network. Point it at Docker explicitly:
+
+```bash
+export DOCKER_HOST="unix://$HOME/.docker/run/docker.sock"
+export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE="/var/run/docker.sock"
+```
+
+Check which endpoint is active with `docker context ls`.
+</details>
 
 `make ci` runs the full pipeline locally. If it passes on your machine it passes
 in GitHub Actions — the Makefile is what the workflow calls.
@@ -168,7 +193,7 @@ rather than `git flow finish`, so every change gets CI and a reviewable diff.
 - [x] OpenAPI-generated types with spec validation enforced at runtime
 - [x] Transaction domain model and semantic validation
 - [x] Idempotent ingest with divergence detection
-- [ ] Postgres persistence (in-memory store today)
+- [x] Postgres persistence with database-enforced idempotency
 - [ ] Transactional outbox and publisher
 - [ ] Metrics and PII-safe logging
 - [ ] Docker Compose stack and Terraform deployment
