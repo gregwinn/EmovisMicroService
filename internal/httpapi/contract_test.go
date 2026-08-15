@@ -15,9 +15,10 @@ import (
 
 const ingestPath = "/ingest/v1/transactions"
 
-// validPayload is the minimal request the contract accepts: every required
-// field present and nothing else. Tests mutate a copy of it so that each case
-// isolates exactly one violation.
+// validPayload is a request that satisfies both validation layers: every
+// contract-required field, plus a plate, because the schema cannot express
+// "at least one identifier" and the semantic layer requires one. Tests mutate a
+// copy so each case isolates exactly one violation.
 func validPayload() map[string]any {
 	return map[string]any{
 		"source":               "lane-controller-07",
@@ -25,6 +26,7 @@ func validPayload() map[string]any {
 		"transaction_type":     "toll",
 		"transaction_time_utc": "2026-08-14T13:45:02Z",
 		"base_amount":          "12.50",
+		"plate":                map[string]any{"number": "ABC1234", "jurisdiction": "TX"},
 	}
 }
 
@@ -76,28 +78,31 @@ func errorFields(t *testing.T, rec *httptest.ResponseRecorder) string {
 	return *body.Fields
 }
 
-// A payload satisfying the contract reaches the handler. The 501 is the current
-// stub; what matters here is that validation let it through.
+// A payload satisfying the contract reaches the handler and is accepted.
 func TestValidPayloadPassesContractValidation(t *testing.T) {
 	rec := postJSON(t, testRouter(t, noChecks()), validPayload())
 
-	assert.Equal(t, http.StatusNotImplemented, rec.Code)
+	assert.Equal(t, http.StatusCreated, rec.Code)
 }
 
 // Optional fields are optional, and an explicit null is not the same as a
 // violation — the spec marks these nullable.
 func TestOptionalAndNullableFieldsAreAccepted(t *testing.T) {
 	tests := map[string]func(map[string]any){
-		"all optionals omitted": func(map[string]any) {},
+		"nothing beyond the required fields and a plate": func(map[string]any) {},
 		"explicit nulls": func(p map[string]any) {
 			p["transponder_number"] = nil
 			p["currency"] = nil
 		},
-		"plate only": func(p map[string]any) {
-			p["plate"] = map[string]any{"number": "ABC1234", "jurisdiction": "TX"}
-		},
-		"transponder only": func(p map[string]any) {
+		"transponder instead of a plate": func(p map[string]any) {
+			delete(p, "plate")
 			p["transponder_number"] = "0180012345678"
+		},
+		"both identifiers": func(p map[string]any) {
+			p["transponder_number"] = "0180012345678"
+		},
+		"explicit currency": func(p map[string]any) {
+			p["currency"] = "USD"
 		},
 		"free-form location and metadata": func(p map[string]any) {
 			// The spec declares both as additionalProperties:true because shape
@@ -114,7 +119,7 @@ func TestOptionalAndNullableFieldsAreAccepted(t *testing.T) {
 
 			rec := postJSON(t, testRouter(t, noChecks()), payload)
 
-			assert.Equal(t, http.StatusNotImplemented, rec.Code,
+			assert.Equal(t, http.StatusCreated, rec.Code,
 				"contract validation should have accepted this payload")
 		})
 	}

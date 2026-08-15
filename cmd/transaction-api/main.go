@@ -18,8 +18,11 @@ import (
 
 	"github.com/gregwinn/EmovisMicroService/internal/config"
 	"github.com/gregwinn/EmovisMicroService/internal/httpapi"
+	"github.com/gregwinn/EmovisMicroService/internal/money"
 	"github.com/gregwinn/EmovisMicroService/internal/platform/health"
 	"github.com/gregwinn/EmovisMicroService/internal/platform/logging"
+	"github.com/gregwinn/EmovisMicroService/internal/store/memory"
+	"github.com/gregwinn/EmovisMicroService/internal/transaction"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -55,6 +58,26 @@ func run(ctx context.Context) error {
 
 	checker := health.New(healthCheckTimeout)
 
+	// config.Load has already verified the currency is recognised.
+	defaultCurrency, _ := money.Lookup(cfg.DefaultCurrency)
+
+	rules := transaction.Rules{
+		Types:           transaction.NewTypeSet(cfg.TransactionTypes),
+		DefaultCurrency: defaultCurrency,
+		MaxClockSkew:    cfg.MaxClockSkew,
+	}
+
+	// The in-memory store keeps the service runnable with no infrastructure,
+	// which is what makes the README quickstart honest. It is not durable;
+	// Postgres replaces it behind the same interface.
+	store := memory.New()
+
+	logger.Info("ingest policy loaded",
+		slog.Any("transaction_types", rules.Types.All()),
+		slog.String("default_currency", defaultCurrency.Code),
+		slog.Duration("max_clock_skew", cfg.MaxClockSkew),
+		slog.String("store", "memory (not durable)"))
+
 	// Building the router loads and parses the embedded OpenAPI contract. A
 	// malformed contract is a build-time mistake that must stop the process
 	// here rather than surface as a runtime failure on the first request.
@@ -62,6 +85,8 @@ func run(ctx context.Context) error {
 		Logger:  logger,
 		Health:  checker,
 		Version: version,
+		Rules:   rules,
+		Store:   store,
 	})
 	if err != nil {
 		return fmt.Errorf("build http router: %w", err)

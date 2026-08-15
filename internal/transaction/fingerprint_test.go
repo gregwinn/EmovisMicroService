@@ -20,7 +20,8 @@ func accepted(t *testing.T, mutate func(*Submission)) Transaction {
 		mutate(&s)
 	}
 
-	tx, problems := testRules().Accept(s)
+	tx, problems, err := testRules().Accept(s)
+	require.NoError(t, err)
 	require.Empty(t, problems)
 	return tx
 }

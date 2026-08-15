@@ -50,7 +50,8 @@ func reasonFor(problems []RuleError, field string) string {
 }
 
 func TestAcceptValidSubmission(t *testing.T) {
-	tx, problems := testRules().Accept(validSubmission())
+	tx, problems, err := testRules().Accept(validSubmission())
+	require.NoError(t, err)
 
 	require.Empty(t, problems)
 
@@ -108,7 +109,8 @@ func TestIdentityRule(t *testing.T) {
 			s.Plate = tt.plate
 			s.Transponder = tt.transponder
 
-			_, problems := testRules().Accept(s)
+			_, problems, err := testRules().Accept(s)
+			require.NoError(t, err)
 
 			if tt.wantAccept {
 				assert.Empty(t, problems)
@@ -143,7 +145,8 @@ func TestTransactionTypeRule(t *testing.T) {
 			s := validSubmission()
 			s.Type = tt.submitted
 
-			tx, problems := testRules().Accept(s)
+			tx, problems, err := testRules().Accept(s)
+			require.NoError(t, err)
 
 			if tt.wantAccept {
 				require.Empty(t, problems)
@@ -163,7 +166,8 @@ func TestUnknownTypeDoesNotLeakTheAcceptedSet(t *testing.T) {
 	s := validSubmission()
 	s.Type = "parking"
 
-	_, problems := testRules().Accept(s)
+	_, problems, err := testRules().Accept(s)
+	require.NoError(t, err)
 
 	reason := reasonFor(problems, "transaction_type")
 	require.NotEmpty(t, reason)
@@ -179,12 +183,14 @@ func TestTypeSetIsRuntimeConfigurable(t *testing.T) {
 	s := validSubmission()
 	s.Type = "parking"
 
-	_, problems := rules.Accept(s)
+	_, problems, err := rules.Accept(s)
+	require.NoError(t, err)
 	require.NotEmpty(t, problems, "not configured yet")
 
 	rules.Types.Replace([]string{"toll", "parking"})
 
-	_, problems = rules.Accept(s)
+	_, problems, err = rules.Accept(s)
+	require.NoError(t, err)
 	assert.Empty(t, problems, "accepted after the operator added it")
 }
 
@@ -220,7 +226,8 @@ func TestTimeRule(t *testing.T) {
 			s := validSubmission()
 			s.OccurredAt = tt.occurredAt
 
-			_, problems := testRules().Accept(s)
+			_, problems, err := testRules().Accept(s)
+			require.NoError(t, err)
 
 			if tt.wantAccept {
 				assert.Empty(t, problems)
@@ -239,7 +246,8 @@ func TestTimeIsNormalizedToUTC(t *testing.T) {
 	s := validSubmission()
 	s.OccurredAt = time.Date(2026, 8, 14, 8, 45, 2, 0, central)
 
-	tx, problems := testRules().Accept(s)
+	tx, problems, err := testRules().Accept(s)
+	require.NoError(t, err)
 
 	require.Empty(t, problems)
 	assert.Equal(t, time.UTC, tx.OccurredAt.Location())
@@ -269,7 +277,8 @@ func TestAmountRule(t *testing.T) {
 			s := validSubmission()
 			s.BaseAmount = tt.amount
 
-			_, problems := testRules().Accept(s)
+			_, problems, err := testRules().Accept(s)
+			require.NoError(t, err)
 
 			if tt.wantAccept {
 				assert.Empty(t, problems)
@@ -286,7 +295,8 @@ func TestZeroAmountIsAccepted(t *testing.T) {
 	s := validSubmission()
 	s.BaseAmount = "0.00"
 
-	tx, problems := testRules().Accept(s)
+	tx, problems, err := testRules().Accept(s)
+	require.NoError(t, err)
 
 	require.Empty(t, problems)
 	assert.True(t, tx.BaseAmount.IsZero())
@@ -312,7 +322,8 @@ func TestCurrencyRule(t *testing.T) {
 			s := validSubmission()
 			s.Currency = tt.currency
 
-			tx, problems := testRules().Accept(s)
+			tx, problems, err := testRules().Accept(s)
+			require.NoError(t, err)
 
 			if tt.wantAccept {
 				require.Empty(t, problems)
@@ -331,7 +342,8 @@ func TestAmountPrecisionFollowsTheResolvedCurrency(t *testing.T) {
 	s.Currency = "JPY"
 	s.BaseAmount = "350.5"
 
-	_, problems := testRules().Accept(s)
+	_, problems, err := testRules().Accept(s)
+	require.NoError(t, err)
 
 	assert.Contains(t, reasonFor(problems, "base_amount"), "0 decimal places")
 	assert.Contains(t, reasonFor(problems, "base_amount"), "JPY")
@@ -345,7 +357,8 @@ func TestAmountIsNotCheckedAgainstAnInvalidCurrency(t *testing.T) {
 	s.Currency = "XYZ"
 	s.BaseAmount = "12.505"
 
-	_, problems := testRules().Accept(s)
+	_, problems, err := testRules().Accept(s)
+	require.NoError(t, err)
 
 	require.Len(t, problems, 1)
 	assert.Equal(t, "currency", problems[0].Field)
@@ -358,14 +371,15 @@ func TestMissingDefaultCurrencyIsAConfigurationError(t *testing.T) {
 	s := validSubmission()
 	s.Currency = ""
 
-	_, problems := rules.Accept(s)
+	_, problems, err := rules.Accept(s)
+	require.NoError(t, err)
 
 	assert.Contains(t, reasonFor(problems, "currency"), "no default currency configured")
 }
 
 // Like the contract validator, semantic validation reports everything at once.
 func TestAllRuleFailuresAreReportedTogether(t *testing.T) {
-	_, problems := testRules().Accept(Submission{
+	_, problems, err := testRules().Accept(Submission{
 		Source:          "lane-controller-07",
 		SourceReference: "LC07-1",
 		Type:            "parking",                 // unrecognized
@@ -373,6 +387,7 @@ func TestAllRuleFailuresAreReportedTogether(t *testing.T) {
 		BaseAmount:      "not-a-number",            // unparseable
 		// no plate, no transponder                    // no identifier
 	})
+	require.NoError(t, err)
 
 	require.Len(t, problems, 4)
 	assert.NotEmpty(t, reasonFor(problems, "transaction_type"))
@@ -389,7 +404,8 @@ func TestFreeFormFieldsArePassedThroughUntouched(t *testing.T) {
 	s.Location = location
 	s.Metadata = metadata
 
-	tx, problems := testRules().Accept(s)
+	tx, problems, err := testRules().Accept(s)
+	require.NoError(t, err)
 
 	require.Empty(t, problems)
 	assert.Equal(t, location, tx.Location, "location is producer passthrough")
@@ -400,19 +416,37 @@ func TestUnconfiguredTypeSetRejectsEverything(t *testing.T) {
 	rules := testRules()
 	rules.Types = nil
 
-	_, problems := rules.Accept(validSubmission())
+	_, problems, err := rules.Accept(validSubmission())
+	require.NoError(t, err)
 
 	assert.Contains(t, reasonFor(problems, "transaction_type"), "no transaction types are configured")
 }
 
-func TestIDGenerationFailureIsReported(t *testing.T) {
+// An infrastructure fault is not a bad request. It comes back on the error
+// channel, never as a rule failure, so the caller answers 500 rather than
+// telling a producer to fix a payload that was never the problem.
+func TestIDGenerationFailureIsAnInfrastructureError(t *testing.T) {
+	entropyFailure := errors.New("entropy source unavailable")
+
 	rules := testRules()
-	rules.NewID = func() (uuid.UUID, error) { return uuid.Nil, errors.New("entropy source unavailable") }
+	rules.NewID = func() (uuid.UUID, error) { return uuid.Nil, entropyFailure }
 
-	_, problems := rules.Accept(validSubmission())
+	_, problems, err := rules.Accept(validSubmission())
 
-	require.Len(t, problems, 1)
-	assert.Contains(t, problems[0].Reason, "could not generate a transaction id")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, entropyFailure)
+	assert.Empty(t, problems, "the producer's payload was valid; do not blame them")
+}
+
+// The converse: a rule failure is never an infrastructure error.
+func TestRuleFailuresDoNotSurfaceAsErrors(t *testing.T) {
+	s := validSubmission()
+	s.BaseAmount = "not-a-number"
+
+	_, problems, err := testRules().Accept(s)
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, problems)
 }
 
 // Rules with no Now or NewID injected must still work; the defaults are the
@@ -425,7 +459,8 @@ func TestRulesFallBackToRealClockAndIDs(t *testing.T) {
 	}
 
 	before := time.Now().UTC()
-	tx, problems := rules.Accept(validSubmission())
+	tx, problems, err := rules.Accept(validSubmission())
+	require.NoError(t, err)
 
 	require.Empty(t, problems)
 	assert.NotEqual(t, uuid.Nil, tx.ID)

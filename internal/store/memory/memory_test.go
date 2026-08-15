@@ -43,7 +43,8 @@ func build(t *testing.T, mutate func(*transaction.Submission)) transaction.Trans
 		Now:             func() time.Time { return fixedNow },
 	}
 
-	tx, problems := rules.Accept(s)
+	tx, problems, err := rules.Accept(s)
+	require.NoError(t, err)
 	require.Empty(t, problems)
 	return tx
 }
