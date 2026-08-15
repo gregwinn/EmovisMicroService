@@ -1,0 +1,171 @@
+### Transaction Ingest API — runnable examples
+#
+# Works with the VS Code REST Client extension and the JetBrains HTTP Client.
+# Start the service first: `make demo` or `make run`.
+#
+# Run them top to bottom: several depend on the one before.
+
+@host = http://localhost:8080
+@ref = LC07-20260814-000918
+
+### 1. A new transaction → 201, duplicate=false
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{
+  "source": "lane-controller-07",
+  "source_reference": "{{ref}}",
+  "transaction_type": "toll",
+  "transaction_time_utc": "2026-08-14T13:45:02Z",
+  "base_amount": "12.50",
+  "plate": { "number": "ABC1234", "jurisdiction": "TX" },
+  "location": { "facility": "SH-130", "plaza": "12", "lane": "3", "direction": "NB" }
+}
+
+### 2. The identical push again → 200, duplicate=true, same id
+# A producer retrying over an unreliable link. No second billable record.
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{
+  "source": "lane-controller-07",
+  "source_reference": "{{ref}}",
+  "transaction_type": "toll",
+  "transaction_time_utc": "2026-08-14T13:45:02Z",
+  "base_amount": "12.50",
+  "plate": { "number": "ABC1234", "jurisdiction": "TX" },
+  "location": { "facility": "SH-130", "plaza": "12", "lane": "3", "direction": "NB" }
+}
+
+### 3. Same key, different amount → 200 on contract, divergence logged
+# The gap the contract leaves open. See docs/adr/0006-idempotency-divergence.md.
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{
+  "source": "lane-controller-07",
+  "source_reference": "{{ref}}",
+  "transaction_type": "toll",
+  "transaction_time_utc": "2026-08-14T13:45:02Z",
+  "base_amount": "99.00",
+  "plate": { "number": "ABC1234", "jurisdiction": "TX" }
+}
+
+### 4. Transponder instead of a plate → 201
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{
+  "source": "lane-controller-07",
+  "source_reference": "LC07-TRANSPONDER-1",
+  "transaction_type": "toll",
+  "transaction_time_utc": "2026-08-14T13:45:02Z",
+  "base_amount": "12.50",
+  "transponder_number": "01800-1234 5678"
+}
+
+### 5. An image-review replay from three months ago → 201
+# Old timestamps are legitimate. There is no posting window.
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{
+  "source": "image-review-vendor",
+  "source_reference": "IRV-2026-05-14-88213",
+  "transaction_type": "violation",
+  "transaction_time_utc": "2026-05-14T08:12:44Z",
+  "base_amount": "12.50",
+  "plate": { "number": "K-9924", "jurisdiction": "mex-tam" },
+  "metadata": { "review_confidence": 0.87, "reviewed_by": "queue-3" }
+}
+
+### 6. A different currency → 201
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{
+  "source": "interop-peer-gothenburg",
+  "source_reference": "GBG-2026-08-14-771",
+  "transaction_type": "toll",
+  "transaction_time_utc": "2026-08-14T07:02:11Z",
+  "base_amount": "22.00",
+  "currency": "SEK",
+  "plate": { "number": "ABC 12D", "jurisdiction": "SE" }
+}
+
+### 7. Empty body → 400, every missing field named
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{}
+
+### 8. No usable identifier → 400
+# Contract-valid and unbillable: the rule no JSON Schema can express.
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{
+  "source": "lane-controller-07",
+  "source_reference": "LC07-NO-IDENTIFIER",
+  "transaction_type": "toll",
+  "transaction_time_utc": "2026-08-14T13:45:02Z",
+  "base_amount": "12.50"
+}
+
+### 9. Several semantic failures at once → 400, all reported together
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{
+  "source": "lane-controller-07",
+  "source_reference": "LC07-MULTIPLE-PROBLEMS",
+  "transaction_type": "parking",
+  "transaction_time_utc": "2027-08-14T13:45:02Z",
+  "base_amount": "-1.005",
+  "currency": "XYZ"
+}
+
+### 10. Too much precision for the currency → 400
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{
+  "source": "lane-controller-07",
+  "source_reference": "LC07-PRECISION",
+  "transaction_type": "toll",
+  "transaction_time_utc": "2026-08-14T13:45:02Z",
+  "base_amount": "12.505",
+  "plate": { "number": "ABC1234", "jurisdiction": "TX" }
+}
+
+### 11. Yen has no minor unit → 400
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{
+  "source": "lane-controller-07",
+  "source_reference": "LC07-JPY",
+  "transaction_type": "toll",
+  "transaction_time_utc": "2026-08-14T13:45:02Z",
+  "base_amount": "350.5",
+  "currency": "JPY",
+  "plate": { "number": "ABC1234", "jurisdiction": "TX" }
+}
+
+### 12. Malformed JSON → 400
+POST {{host}}/ingest/v1/transactions
+Content-Type: application/json
+
+{not json
+
+### Liveness
+GET {{host}}/healthz
+
+### Readiness — names every dependency and its latency
+GET {{host}}/readyz
+
+### Metrics
+GET {{host}}/metrics
+
+### Outbox depth and lag, from the relay
+GET http://localhost:9090/metrics

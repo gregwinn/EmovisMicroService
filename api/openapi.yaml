@@ -1,0 +1,236 @@
+openapi: 3.0.3
+
+info:
+  title: Transaction Ingest API
+  version: 1.0.0
+  description: >
+    Inbound ingest contract for a billable tolling transaction.
+
+    A producing system (roadside lane controller, image-review vendor, an
+    interoperability peer, a file-based batch loader) pushes one transaction at a
+    time to this endpoint. The transaction is the atomic unit of revenue in a
+    tolling back office: it records that a vehicle used a facility at a point in
+    time, identified by a transponder read and/or a license plate, at an
+    as-received rate.
+
+    Notes on the contract that matter more than they look:
+
+    - Ingest is idempotent on (source, source_reference). Producers retry — over
+      unreliable links, after timeouts, and during file replays — and a retry
+      must never create a second billable record.
+    - At least one identifier (plate or transponder) must be present. A payload
+      with neither cannot ever be attributed to a customer.
+    - Monetary values are decimal strings ("12.50"), never floats.
+    - Accepting a transaction is not the same as resolving it. Who owns the
+      vehicle, what the final price is, and whether it has been collected are
+      downstream concerns. Ingest's job is to durably accept, validate, and
+      acknowledge.
+
+    In production this endpoint is authenticated, carries the legal capture
+    images alongside the payload, and every accepted transaction is picked up
+    asynchronously by a resolution pipeline. None of that is specified here.
+
+paths:
+  /ingest/v1/transactions:
+    post:
+      operationId: ingestTransaction
+      summary: Ingest a billable transaction (producer; idempotent)
+      description: >
+        Accepts a single transaction push from a producing system.
+
+        A new record returns 201 with association_status=received,
+        settlement_status=priced and duplicate=false. A re-sent push that
+        matches an existing (source, source_reference) returns 200 with the
+        existing record and duplicate=true.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestRequest"
+      responses:
+        "201":
+          description: Transaction created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResult"
+        "200":
+          description: Duplicate of an already-ingested transaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResult"
+        "400":
+          description: >
+            Invalid request — missing or malformed field, no usable identifier,
+            unrecognized transaction_type, or an unparseable amount.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    IngestRequest:
+      type: object
+      required:
+        - source
+        - source_reference
+        - transaction_type
+        - transaction_time_utc
+        - base_amount
+      properties:
+        source:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Producing system id.
+          example: lane-controller-07
+        source_reference:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: >
+            The source's own unique id for this transaction. Unique within a
+            given source — together they are the idempotency key.
+          example: LC07-20260814-000918
+        transaction_type:
+          type: string
+          description: >
+            The kind of billable event. The set of accepted values is
+            operator-configurable at runtime, not compiled in.
+          example: toll
+        transaction_time_utc:
+          type: string
+          format: date-time
+          description: >
+            When the vehicle used the facility. Always UTC — the _utc suffix is
+            part of the field name on purpose. May be well in the past for a
+            batch or image-review replay.
+          example: "2026-08-14T13:45:02Z"
+        plate:
+          $ref: "#/components/schemas/PlateRef"
+        transponder_number:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: >
+            Raw transponder/tag read, as the producer saw it. The same physical
+            tag is legitimately reported in several textual forms by different
+            equipment.
+          example: "0180012345678"
+        base_amount:
+          type: string
+          description: >
+            As-received rate, decimal string e.g. "12.50". Immutable once
+            accepted — later changes are recorded as separate adjustments, not
+            by editing this value.
+          example: "12.50"
+        currency:
+          type: string
+          nullable: true
+          maxLength: 8
+          description: Optional — defaults to the deployment's configured currency.
+          example: USD
+        location:
+          $ref: "#/components/schemas/Location"
+        metadata:
+          type: object
+          additionalProperties: true
+          description: >
+            Producer passthrough. Preserved verbatim with the transaction for
+            audit and dispute handling; not interpreted.
+
+    PlateRef:
+      type: object
+      required:
+        - number
+        - jurisdiction
+      properties:
+        number:
+          type: string
+          minLength: 1
+          maxLength: 16
+          description: License plate as read.
+          example: ABC1234
+        jurisdiction:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: >
+            Issuing jurisdiction. Plates arrive from anywhere, including
+            off-network jurisdictions.
+          example: TX
+
+    Location:
+      type: object
+      description: >
+        Where the transaction occurred — facility / plaza / lane / direction.
+        Shape varies by producer.
+      additionalProperties: true
+      example:
+        facility: SH-130
+        plaza: "12"
+        lane: "3"
+        direction: NB
+
+    AssociationStatus:
+      type: string
+      description: >
+        The "whose is it?" axis — progress toward attributing the transaction to
+        a customer account. A freshly ingested transaction is always `received`.
+      enum:
+        - received
+        - resolving
+        - associated
+        - exception
+      example: received
+
+    SettlementStatus:
+      type: string
+      description: >
+        The "what is its financial state?" axis. Orthogonal to association — a
+        transaction can be priced but unattributed, or attributed and unpaid.
+        A freshly ingested transaction is `priced`, because the producer always
+        supplies a base rate.
+      enum:
+        - unpriced
+        - priced
+        - payable
+        - paid
+      example: priced
+
+    IngestResult:
+      type: object
+      required:
+        - id
+        - association_status
+        - settlement_status
+        - duplicate
+      properties:
+        id:
+          type: string
+          description: This system's id for the transaction.
+        association_status:
+          $ref: "#/components/schemas/AssociationStatus"
+        settlement_status:
+          $ref: "#/components/schemas/SettlementStatus"
+        duplicate:
+          type: boolean
+          description: >
+            true when the push matched an already-ingested transaction and
+            nothing new was created.
+
+    Error:
+      type: object
+      properties:
+        code:
+          type: integer
+          format: int32
+        message:
+          type: string
+        fields:
+          type: string
+          description: Optional detail about which field(s) failed validation.

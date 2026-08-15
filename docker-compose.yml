@@ -1,0 +1,97 @@
+# The full local stack: PostgreSQL, the migration step, the API, and the relay.
+#
+#   docker compose up --build     bring everything up
+#   make demo                     the same, then exercise it end to end
+#
+# The point of this file is that a reader can see the whole system at once —
+# what depends on what, and where the seams are.
+
+name: transaction-ingest
+
+x-service-env: &service-env
+  DATABASE_URL: postgres://ingest:ingest@postgres:5432/ingest?sslmode=disable
+  ENVIRONMENT: compose
+  LOG_FORMAT: json
+  LOG_LEVEL: info
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ingest
+      POSTGRES_PASSWORD: ingest
+      POSTGRES_DB: ingest
+    ports:
+      # Exposed so you can psql into it while the stack runs. Non-default port
+      # to avoid colliding with a local PostgreSQL.
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ingest -d ingest"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  # Migrations are their own service that runs to completion, mirroring how
+  # they run in production: a one-off task before the new revision is released,
+  # never inside a service's startup path where rolling tasks would race.
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BINARY: migrate
+    environment: *service-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BINARY: transaction-api
+    environment:
+      <<: *service-env
+      HTTP_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # Distroless has no shell and no curl, so the probe reuses the binary's
+      # own health check rather than shelling out.
+      test: ["CMD", "/app", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  relay:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BINARY: outbox-relay
+    environment:
+      <<: *service-env
+      OUTBOX_POLL_INTERVAL: 1s
+      METRICS_ADDR: ":9090"
+    ports:
+      # The relay serves outbox depth and lag — the SLI for whether the
+      # resolution pipeline is hearing about transactions.
+      - "9090:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
