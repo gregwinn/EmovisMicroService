@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # go.mod is the single source of truth for the toolchain version, so
           # a Go security patch is applied by bumping one line and CI proves it.
@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # go.mod is the single source of truth for the toolchain version, so
           # a Go security patch is applied by bumping one line and CI proves it.
@@ -72,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # go.mod is the single source of truth for the toolchain version, so
           # a Go security patch is applied by bumping one line and CI proves it.
@@ -99,7 +99,7 @@ jobs:
           # `git describe` needs history to derive the version stamp.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # go.mod is the single source of truth for the toolchain version, so
           # a Go security patch is applied by bumping one line and CI proves it.
@@ -117,7 +117,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # go.mod is the single source of truth for the toolchain version, so
           # a Go security patch is applied by bumping one line and CI proves it.
