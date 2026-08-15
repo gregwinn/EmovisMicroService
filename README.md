@@ -108,6 +108,24 @@ rather than one per restart.
 
 ---
 
+## Documentation
+
+| Document | For |
+|---|---|
+| [Architecture](docs/architecture.md) | How the pieces fit and why they are arranged this way |
+| [The Domain](docs/domain.md) | What a tolling transaction is — written for someone new to tolling |
+| [API](docs/api.md) | Behaviour the schema cannot state · [runnable requests](docs/requests.http) |
+| [Decisions (ADRs)](docs/adr/) | Twelve one-page records of what was decided and what it cost |
+| [Assumptions](docs/assumptions.md) | Every call made without you, phrased as the question I'd have asked |
+| [Runbook](docs/runbook.md) | Alert → meaning → action |
+| [Security](docs/security.md) | PII handling, trust boundaries, what I'd change before production |
+
+**If you only read two ADRs:**
+[0006](docs/adr/0006-idempotency-divergence.md) is the gap the contract
+deliberately leaves open and how it is closed;
+[0007](docs/adr/0007-transactional-outbox.md) is why the resolution pipeline
+cannot miss a billable transaction.
+
 ## Repository layout
 
 ```
