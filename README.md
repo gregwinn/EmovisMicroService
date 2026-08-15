@@ -104,6 +104,7 @@ rather than one per restart.
 | `DATABASE_MAX_CONNS` | `10` | Connection pool ceiling |
 | `OUTBOX_BATCH_SIZE` | `100` | Events claimed per relay pass |
 | `OUTBOX_POLL_INTERVAL` | `2s` | Wait after an empty pass; a non-empty pass retries at once |
+| `METRICS_ADDR` | `:9090` | Where the outbox relay serves `/metrics` |
 
 ---
 
@@ -151,6 +152,28 @@ breakdown:
 ```
 
 ---
+
+## Observability
+
+The API serves `/metrics` on its main listener; the relay serves its own on
+`:9090`. The metrics are chosen to answer questions an operator actually asks,
+not to instrument everything countable:
+
+| Metric | Answers |
+|---|---|
+| `ingest_transactions_total{source,result}` | Is a producer failing, and which one? |
+| `ingest_validation_failures_total{source,layer,field}` | **Which rule** are they breaking? |
+| `ingest_divergent_duplicates_total{source}` | Is someone re-sending a changed amount under a used key? Worth alerting on. |
+| `outbox_pending_events` · `outbox_oldest_pending_age_seconds` | Is the resolution pipeline hearing about transactions? |
+
+That last pair is the SLI for the outbox. The pattern makes *lost* events
+impossible by converting them into *late* ones — these are how you find out
+they are late.
+
+Logs are JSON with request-id correlation. Plate and transponder values are
+**never logged**; a redacting handler enforces it structurally on top of the
+code simply not logging them, so a future mistake produces `[REDACTED]` rather
+than a disclosure.
 
 ## The local stack
 
@@ -232,7 +255,7 @@ rather than `git flow finish`, so every change gets CI and a reviewable diff.
 - [x] Idempotent ingest with divergence detection
 - [x] Postgres persistence with database-enforced idempotency
 - [x] Transactional outbox and relay
-- [ ] Metrics and PII-safe logging
+- [x] Prometheus metrics and PII-safe logging
 - [x] Docker Compose stack with a one-command end-to-end demo
 - [ ] Terraform deployment
 - [ ] Architecture decision records and runbook

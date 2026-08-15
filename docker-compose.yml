@@ -82,6 +82,11 @@ services:
     environment:
       <<: *service-env
       OUTBOX_POLL_INTERVAL: 1s
+      METRICS_ADDR: ":9090"
+    ports:
+      # The relay serves outbox depth and lag — the SLI for whether the
+      # resolution pipeline is hearing about transactions.
+      - "9090:9090"
     depends_on:
       postgres:
         condition: service_healthy

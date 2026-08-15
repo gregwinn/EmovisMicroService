@@ -22,7 +22,23 @@ type Relay struct {
 	publisher Publisher
 	logger    *slog.Logger
 	opts      RelayOptions
+	metrics   Recorder
 }
+
+// Recorder is the slice of instrumentation the relay reports.
+//
+// An interface rather than the concrete metrics type so that the outbox does
+// not depend on Prometheus and tests can pass a no-op.
+type Recorder interface {
+	OutboxPublish(result string)
+	OutboxBacklog(pending int, oldest time.Duration)
+}
+
+// noopRecorder is used when no Recorder is supplied.
+type noopRecorder struct{}
+
+func (noopRecorder) OutboxPublish(string)             {}
+func (noopRecorder) OutboxBacklog(int, time.Duration) {}
 
 // RelayOptions tunes the relay's polling and retry behaviour.
 type RelayOptions struct {
@@ -73,7 +89,16 @@ func NewRelay(pool *pgxpool.Pool, publisher Publisher, logger *slog.Logger, opts
 		opts.MaxAttempts = defaults.MaxAttempts
 	}
 
-	return &Relay{pool: pool, publisher: publisher, logger: logger, opts: opts}
+	return &Relay{pool: pool, publisher: publisher, logger: logger, opts: opts, metrics: noopRecorder{}}
+}
+
+// WithMetrics attaches a recorder. Returns the relay so it can be chained onto
+// NewRelay at a call site.
+func (r *Relay) WithMetrics(recorder Recorder) *Relay {
+	if recorder != nil {
+		r.metrics = recorder
+	}
+	return r
 }
 
 // Run drains the outbox until ctx is cancelled.
@@ -84,6 +109,8 @@ func (r *Relay) Run(ctx context.Context) error {
 		slog.Duration("poll_interval", r.opts.PollInterval))
 
 	for {
+		r.reportBacklog(ctx)
+
 		published, err := r.RunOnce(ctx)
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -211,6 +238,8 @@ func (r *Relay) publishOne(ctx context.Context, dbTx pgx.Tx, c claimed) error {
 		return fmt.Errorf("mark event published: %w", err)
 	}
 
+	r.metrics.OutboxPublish("published")
+
 	// The window that makes delivery at-least-once rather than exactly-once:
 	// the publish above has already happened, and this transaction may still
 	// fail to commit. Redelivery is the safe direction, and consumers
@@ -240,6 +269,12 @@ func (r *Relay) recordFailure(ctx context.Context, dbTx pgx.Tx, c claimed, cause
 		slog.Bool("parked", attempts >= r.opts.MaxAttempts),
 		slog.Any("error", cause))
 
+	result := "failed"
+	if attempts >= r.opts.MaxAttempts {
+		result = "parked"
+	}
+	r.metrics.OutboxPublish(result)
+
 	if _, err := dbTx.Exec(ctx, markFailed, c.event.ID, cause.Error(), backoff.String()); err != nil {
 		return fmt.Errorf("record publish failure: %w", err)
 	}
@@ -265,6 +300,22 @@ func (r *Relay) backoffFor(attempts int) time.Duration {
 		return r.opts.MaxBackoff
 	}
 	return backoff
+}
+
+// reportBacklog refreshes the depth and lag gauges. Failures are ignored: a
+// missing metric sample must never stop the relay from doing its actual job.
+func (r *Relay) reportBacklog(ctx context.Context) {
+	pending, err := r.PendingCount(ctx)
+	if err != nil {
+		return
+	}
+
+	oldest, _, err := r.OldestPending(ctx)
+	if err != nil {
+		return
+	}
+
+	r.metrics.OutboxBacklog(pending, oldest)
 }
 
 // PendingCount reports how many events are waiting to be published. It backs

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/gregwinn/EmovisMicroService/internal/httpapi/gen"
 	"github.com/gregwinn/EmovisMicroService/internal/httpapi/middleware"
+	"github.com/gregwinn/EmovisMicroService/internal/platform/metrics"
 	"github.com/gregwinn/EmovisMicroService/internal/transaction"
 )
 
@@ -16,9 +18,10 @@ import (
 // implementation is the second half of ADR-0002: the spec drives the types, and
 // the types drive the code that must exist.
 type ingestServer struct {
-	logger *slog.Logger
-	rules  transaction.Rules
-	store  transaction.Store
+	logger  *slog.Logger
+	rules   transaction.Rules
+	store   transaction.Store
+	metrics *metrics.Metrics
 }
 
 // IngestTransaction handles POST /ingest/v1/transactions.
@@ -33,6 +36,7 @@ type ingestServer struct {
 // a duplicate, 400 for anything the producer got wrong.
 func (s *ingestServer) IngestTransaction(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	started := time.Now()
 
 	var body gen.IngestRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -43,6 +47,7 @@ func (s *ingestServer) IngestTransaction(w http.ResponseWriter, r *http.Request)
 			slog.String("request_id", middleware.RequestIDFrom(ctx)),
 			slog.Any("error", err))
 
+		s.metrics.IngestResult("unknown", metrics.ResultRejected, time.Since(started))
 		writeError(w, http.StatusBadRequest, "request body could not be read",
 			[]FieldError{{Field: "body", Reason: "is not valid JSON"}})
 		return
@@ -57,6 +62,7 @@ func (s *ingestServer) IngestTransaction(w http.ResponseWriter, r *http.Request)
 			slog.String("source", body.Source),
 			slog.Any("error", err))
 
+		s.metrics.IngestResult(body.Source, metrics.ResultError, time.Since(started))
 		writeError(w, http.StatusInternalServerError, "transaction could not be processed", nil)
 		return
 	}
@@ -74,6 +80,13 @@ func (s *ingestServer) IngestTransaction(w http.ResponseWriter, r *http.Request)
 			slog.String("source_reference", body.SourceReference),
 			slog.String("fields", formatFieldErrors(fields)))
 
+		// One increment per rejected field, so a dashboard can say *which* rule a
+		// producer keeps breaking rather than only that something is wrong.
+		for _, f := range fields {
+			s.metrics.ValidationFailure(body.Source, "semantic", f.Field)
+		}
+		s.metrics.IngestResult(body.Source, metrics.ResultRejected, time.Since(started))
+
 		writeError(w, http.StatusBadRequest, "transaction failed validation", fields)
 		return
 	}
@@ -89,20 +102,27 @@ func (s *ingestServer) IngestTransaction(w http.ResponseWriter, r *http.Request)
 		// No detail to the caller: storage errors leak infrastructure shape.
 		// A producer's correct response to a 500 is to retry, and idempotency
 		// makes that safe.
+		s.metrics.IngestResult(tx.Source, metrics.ResultError, time.Since(started))
 		writeError(w, http.StatusInternalServerError, "transaction could not be recorded", nil)
 		return
 	}
 
 	if outcome.Divergent {
 		s.logDivergence(r, tx, outcome)
+		// Worth alerting on: a producer is sending different content under an
+		// idempotency key it has already used.
+		s.metrics.DivergentReplay(tx.Source)
 	}
 
 	// The contract: a new record is 201, a matched key is 200.
 	status := http.StatusCreated
+	result := metrics.ResultCreated
 	if outcome.Duplicate {
 		status = http.StatusOK
+		result = metrics.ResultDuplicate
 	}
 
+	s.metrics.IngestResult(tx.Source, result, time.Since(started))
 	writeJSON(w, status, toResult(outcome))
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gregwinn/EmovisMicroService/internal/httpapi/gen"
 	"github.com/gregwinn/EmovisMicroService/internal/httpapi/middleware"
+	"github.com/gregwinn/EmovisMicroService/internal/platform/metrics"
 )
 
 // LoadSpec returns the OpenAPI contract embedded into the binary at build time.
@@ -45,7 +46,7 @@ func LoadSpec() (*openapi3.T, error) {
 // Running the spec as executable validation is the whole point of ADR-0002: it
 // makes drift between the published contract and the implementation impossible
 // rather than merely discouraged.
-func specValidator(spec *openapi3.T, logger *slog.Logger) gen.MiddlewareFunc {
+func specValidator(spec *openapi3.T, logger *slog.Logger, recorder *metrics.Metrics) gen.MiddlewareFunc {
 	return nethttpmiddleware.OapiRequestValidatorWithOptions(spec, &nethttpmiddleware.Options{
 		Options: openapi3filter.Options{
 			// Report every schema violation, not just the first. A producer
@@ -82,6 +83,12 @@ func specValidator(spec *openapi3.T, logger *slog.Logger) gen.MiddlewareFunc {
 				slog.Int("status", status),
 				slog.String("fields", formatFieldErrors(fields)),
 			)
+
+			// The producer is unknown here: the body failed validation, so its
+			// `source` cannot be trusted or may be absent entirely.
+			for _, f := range fields {
+				recorder.ValidationFailure("unknown", "contract", f.Field)
+			}
 
 			writeError(w, status, "request does not satisfy the API contract", fields)
 		},

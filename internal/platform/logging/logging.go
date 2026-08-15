@@ -27,7 +27,14 @@ type Options struct {
 // Any format other than "text" produces JSON: an unrecognized value should not
 // silently disable logging, and config.Load has already rejected bad values.
 func New(w io.Writer, opts Options) *slog.Logger {
-	handlerOpts := &slog.HandlerOptions{Level: opts.Level}
+	handlerOpts := &slog.HandlerOptions{
+		Level: opts.Level,
+		// Defence in depth for PII. No code path logs a plate or transponder
+		// value, and tests assert that; this makes the guarantee structural, so
+		// a future mistake produces a redacted line rather than a disclosure.
+		// See redact.go.
+		ReplaceAttr: redactSensitive,
+	}
 
 	var handler slog.Handler
 	if opts.Format == "text" {

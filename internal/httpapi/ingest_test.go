@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/common/expfmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -361,6 +363,7 @@ func TestStoreFailureIsReportedAsServerError(t *testing.T) {
 		Version: "test",
 		Rules:   testRules(),
 		Store:   failing,
+		Metrics: h.Metrics,
 	})
 	require.NoError(t, err)
 
@@ -379,4 +382,80 @@ type failingStore struct{ err error }
 
 func (s *failingStore) Ingest(context.Context, transaction.Transaction) (transaction.IngestOutcome, error) {
 	return transaction.IngestOutcome{}, s.err
+}
+
+// Metrics are how an operator sees producer behaviour without reading logs.
+func TestIngestRecordsMetrics(t *testing.T) {
+	h := newHarness(t, noChecks())
+
+	postJSON(t, h, validPayload()) // created
+	postJSON(t, h, validPayload()) // duplicate
+
+	divergent := validPayload()
+	divergent["base_amount"] = "99.00"
+	postJSON(t, h, divergent) // divergent duplicate
+
+	rejected := validPayload()
+	rejected["source_reference"] = "other"
+	rejected["transaction_type"] = "parking"
+	postJSON(t, h, rejected) // rejected
+
+	exported := gatherMetrics(t, h)
+
+	assert.Contains(t, exported, `ingest_transactions_total{result="created",source="lane-controller-07"} 1`)
+	assert.Contains(t, exported, `ingest_transactions_total{result="duplicate",source="lane-controller-07"} 2`)
+	assert.Contains(t, exported, `ingest_transactions_total{result="rejected",source="lane-controller-07"} 1`)
+	assert.Contains(t, exported, `ingest_divergent_duplicates_total{source="lane-controller-07"} 1`)
+
+	// The breakdown that turns "producer X is broken" into a dashboard.
+	assert.Contains(t, exported,
+		`ingest_validation_failures_total{field="transaction_type",layer="semantic",source="lane-controller-07"} 1`)
+}
+
+// Contract-layer rejections are counted too, attributed to an unknown producer:
+// the body failed validation, so its `source` cannot be trusted.
+func TestContractRejectionsAreCounted(t *testing.T) {
+	h := newHarness(t, noChecks())
+
+	postJSON(t, h, map[string]any{})
+
+	exported := gatherMetrics(t, h)
+	assert.Contains(t, exported, `layer="contract"`)
+	assert.Contains(t, exported, `source="unknown"`)
+}
+
+// The route label is the registered pattern, never the raw path — a label taken
+// from user input has unbounded cardinality.
+func TestHTTPMetricsUseTheRoutePatternNotThePath(t *testing.T) {
+	h := newHarness(t, noChecks())
+
+	postJSON(t, h, validPayload())
+	// A path that matches nothing must not create its own time series.
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/nope/"+uuid.NewString(), nil))
+
+	exported := gatherMetrics(t, h)
+	assert.Contains(t, exported, `route="POST /ingest/v1/transactions"`)
+	assert.Contains(t, exported, `route="unmatched"`)
+	assert.NotContains(t, exported, "/nope/")
+}
+
+func TestMetricsEndpointIsServed(t *testing.T) {
+	rec := get(t, testRouter(t, noChecks()), "/metrics")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "go_goroutines")
+}
+
+func gatherMetrics(t *testing.T, h *harness) string {
+	t.Helper()
+
+	families, err := h.Metrics.Registry().Gather()
+	require.NoError(t, err)
+
+	var b strings.Builder
+	enc := expfmt.NewEncoder(&b, expfmt.NewFormat(expfmt.TypeTextPlain))
+	for _, f := range families {
+		require.NoError(t, enc.Encode(f))
+	}
+	return b.String()
 }
