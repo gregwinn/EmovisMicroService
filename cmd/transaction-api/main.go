@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -35,6 +36,23 @@ var version = "dev"
 const healthCheckTimeout = 2 * time.Second
 
 func main() {
+	// A self-probe mode for container healthchecks: the distroless runtime image
+	// has no shell and no curl. See healthcheck.go.
+	healthcheck := flag.Bool("healthcheck", false, "probe the local /healthz endpoint and exit")
+	flag.Parse()
+
+	if *healthcheck {
+		addr := os.Getenv("HTTP_ADDR")
+		if addr == "" {
+			addr = ":8080"
+		}
+		if err := runHealthcheck(addr); err != nil {
+			fmt.Fprintf(os.Stderr, "unhealthy: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(context.Background()); err != nil {
 		// Startup can fail before a logger exists, so this path uses stderr
 		// directly rather than assuming structured logging is available.
