@@ -46,9 +46,24 @@ make run        # start the API on :8080
 Then, in another shell:
 
 ```bash
-curl -s localhost:8080/healthz | jq
-curl -s localhost:8080/readyz  | jq
+BODY='{
+  "source": "lane-controller-07",
+  "source_reference": "LC07-20260814-000918",
+  "transaction_type": "toll",
+  "transaction_time_utc": "2026-08-14T13:45:02Z",
+  "base_amount": "12.50",
+  "plate": { "number": "ABC1234", "jurisdiction": "TX" }
+}'
+
+# 201 — a new billable transaction
+curl -s localhost:8080/ingest/v1/transactions -H 'Content-Type: application/json' -d "$BODY" | jq
+
+# 200 with duplicate=true and the same id — the retry created nothing
+curl -s localhost:8080/ingest/v1/transactions -H 'Content-Type: application/json' -d "$BODY" | jq
 ```
+
+> **Note:** the default store is in-memory, so nothing survives a restart.
+> Postgres replaces it behind the same interface.
 
 ---
 
@@ -69,6 +84,9 @@ rather than one per restart.
 | `SHUTDOWN_TIMEOUT` | `15s` | Grace period for draining in-flight requests |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `LOG_FORMAT` | `json` | `json` \| `text` |
+| `TRANSACTION_TYPES` | `toll,violation,fee` | Accepted billable event types — operator configuration, not a compiled enum |
+| `DEFAULT_CURRENCY` | `USD` | Applied when a producer omits `currency` |
+| `MAX_CLOCK_SKEW` | `5m` | How far ahead of now `transaction_time_utc` may be. There is no bound on the past. |
 
 ---
 
@@ -148,8 +166,9 @@ rather than `git flow finish`, so every change gets CI and a reviewable diff.
 - [x] CI: lint, race-detector tests with a coverage gate, build, vulnerability
       and secret scanning
 - [x] OpenAPI-generated types with spec validation enforced at runtime
-- [ ] Transaction domain model and semantic validation
-- [ ] Postgres persistence with idempotent ingest
+- [x] Transaction domain model and semantic validation
+- [x] Idempotent ingest with divergence detection
+- [ ] Postgres persistence (in-memory store today)
 - [ ] Transactional outbox and publisher
 - [ ] Metrics and PII-safe logging
 - [ ] Docker Compose stack and Terraform deployment

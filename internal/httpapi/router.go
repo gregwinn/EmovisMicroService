@@ -13,6 +13,7 @@ import (
 	"github.com/gregwinn/EmovisMicroService/internal/httpapi/gen"
 	"github.com/gregwinn/EmovisMicroService/internal/httpapi/middleware"
 	"github.com/gregwinn/EmovisMicroService/internal/platform/health"
+	"github.com/gregwinn/EmovisMicroService/internal/transaction"
 )
 
 // Deps are the collaborators the HTTP layer needs. Passing them explicitly
@@ -22,6 +23,11 @@ type Deps struct {
 	Logger  *slog.Logger
 	Health  *health.Checker
 	Version string
+
+	// Rules is the operator configuration semantic validation runs against.
+	Rules transaction.Rules
+	// Store is where accepted transactions are durably recorded.
+	Store transaction.Store
 }
 
 // NewRouter builds the service's HTTP handler.
@@ -52,7 +58,13 @@ func NewRouter(d Deps) (http.Handler, error) {
 	mux.HandleFunc("GET /healthz", handleLive())
 	mux.HandleFunc("GET /readyz", handleReady(d.Health))
 
-	gen.HandlerWithOptions(&ingestServer{logger: d.Logger}, gen.StdHTTPServerOptions{
+	server := &ingestServer{
+		logger: d.Logger,
+		rules:  d.Rules,
+		store:  d.Store,
+	}
+
+	gen.HandlerWithOptions(server, gen.StdHTTPServerOptions{
 		BaseRouter:  mux,
 		Middlewares: []gen.MiddlewareFunc{specValidator(spec, d.Logger)},
 		// Reached when generated parameter binding fails before validation runs.

@@ -13,6 +13,9 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/gregwinn/EmovisMicroService/internal/money"
+	"github.com/gregwinn/EmovisMicroService/internal/transaction"
 )
 
 // Config is the fully resolved configuration for a service process.
@@ -31,6 +34,27 @@ type Config struct {
 	// Logging.
 	LogLevel  slog.Level
 	LogFormat string
+
+	// Ingest policy.
+
+	// TransactionTypes is the set of billable event types this deployment
+	// accepts. The contract states these are "operator-configurable at runtime,
+	// not compiled in", so they are configuration rather than a Go enum.
+	//
+	// Environment configuration is the seam, not the destination: in production
+	// this would be backed by the operator's reference data service so a new
+	// type does not need a restart. transaction.TypeSet is already swappable in
+	// place, so that change touches the loader and nothing else.
+	TransactionTypes []string
+
+	// DefaultCurrency applies when a producer omits `currency`, which the
+	// contract permits.
+	DefaultCurrency string
+
+	// MaxClockSkew bounds how far ahead of now transaction_time_utc may be.
+	// There is no equivalent bound on the past: batch and image-review
+	// producers legitimately submit long after the vehicle passed.
+	MaxClockSkew time.Duration
 }
 
 // Load reads configuration from the environment, applying defaults suitable for
@@ -48,6 +72,17 @@ func Load() (Config, error) {
 		IdleTimeout:     envDuration("HTTP_IDLE_TIMEOUT", 120*time.Second, &errs),
 		ShutdownTimeout: envDuration("SHUTDOWN_TIMEOUT", 15*time.Second, &errs),
 		LogFormat:       envString("LOG_FORMAT", "json"),
+
+		TransactionTypes: envStringSlice("TRANSACTION_TYPES", []string{"toll", "violation", "fee"}),
+		DefaultCurrency:  strings.ToUpper(envString("DEFAULT_CURRENCY", "USD")),
+		MaxClockSkew:     envDuration("MAX_CLOCK_SKEW", transaction.DefaultMaxClockSkew, &errs),
+	}
+
+	if len(cfg.TransactionTypes) == 0 {
+		errs = append(errs, errors.New("TRANSACTION_TYPES: must list at least one accepted type"))
+	}
+	if _, ok := money.Lookup(cfg.DefaultCurrency); !ok {
+		errs = append(errs, fmt.Errorf("DEFAULT_CURRENCY: %q is not a recognised ISO-4217 code", cfg.DefaultCurrency))
 	}
 
 	level, err := parseLogLevel(envString("LOG_LEVEL", "info"))
@@ -71,6 +106,23 @@ func envString(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envStringSlice reads a comma-separated list, trimming each entry and dropping
+// blanks so that trailing commas and stray spaces are not a deployment hazard.
+func envStringSlice(key string, fallback []string) []string {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+
+	var values []string
+	for part := range strings.SplitSeq(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	return values
 }
 
 // envDuration parses a duration, recording a problem rather than failing fast so

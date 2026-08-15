@@ -74,9 +74,12 @@ type Rules struct {
 // contract validator does: a producer fixing an integration should get the
 // whole list in one response.
 //
-// A non-empty error slice means nothing was accepted and the returned
-// Transaction is meaningless.
-func (r Rules) Accept(s Submission) (Transaction, []RuleError) {
+// The two failure channels are distinct on purpose. A non-empty []RuleError
+// means the producer sent something unacceptable and the caller owes them a
+// 400. A non-nil error means this service could not do its job — the caller
+// owes them a 500 and owes an operator an alert. Collapsing the two would tell
+// a producer to fix a payload that was never the problem.
+func (r Rules) Accept(s Submission) (Transaction, []RuleError, error) {
 	var problems []RuleError
 
 	now := r.now()
@@ -105,16 +108,15 @@ func (r Rules) Accept(s Submission) (Transaction, []RuleError) {
 	problems = appendIf(problems, identityProblem)
 
 	if len(problems) > 0 {
-		return Transaction{}, problems
+		return Transaction{}, problems, nil
 	}
 
 	id, err := r.newID()
 	if err != nil {
-		// Id generation failing is an infrastructure fault, not a bad request.
-		// It surfaces as a rule error only so that Accept has one error channel;
-		// the caller maps it to a 500. In practice uuid.NewV7 fails only if the
-		// system entropy source is broken.
-		return Transaction{}, []RuleError{{Reason: fmt.Sprintf("could not generate a transaction id: %v", err)}}
+		// An infrastructure fault, not a bad request: uuid.NewV7 fails only if
+		// the system entropy source is broken. The producer's payload was fine
+		// and telling them otherwise would send them chasing a phantom bug.
+		return Transaction{}, nil, fmt.Errorf("generate transaction id: %w", err)
 	}
 
 	return Transaction{
@@ -135,7 +137,7 @@ func (r Rules) Accept(s Submission) (Transaction, []RuleError) {
 		// because nothing has tried to attribute it yet.
 		AssociationStatus: AssociationReceived,
 		SettlementStatus:  SettlementPriced,
-	}, nil
+	}, nil, nil
 }
 
 // validateType checks the type against the operator's runtime set, returning

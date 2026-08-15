@@ -1,10 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,18 +14,66 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/gregwinn/EmovisMicroService/internal/money"
 	"github.com/gregwinn/EmovisMicroService/internal/platform/health"
+	"github.com/gregwinn/EmovisMicroService/internal/store/memory"
+	"github.com/gregwinn/EmovisMicroService/internal/transaction"
 )
 
 func testRouter(t *testing.T, checker *health.Checker) http.Handler {
 	t.Helper()
+	return newHarness(t, checker).Handler
+}
+
+// harness is a router wired to a fresh in-memory store, plus handles on the
+// collaborators so tests can assert on what actually got recorded.
+type harness struct {
+	http.Handler
+
+	Store *memory.Store
+	Logs  *bytes.Buffer
+}
+
+// testNow is the clock the HTTP tests run against, so "in the future" and
+// "backdated" mean something stable.
+var testNow = time.Date(2026, 8, 14, 14, 0, 0, 0, time.UTC)
+
+// testRules is the operator configuration the HTTP tests validate against.
+func testRules() transaction.Rules {
+	usd, _ := money.Lookup("USD")
+	return transaction.Rules{
+		Types:           transaction.NewTypeSet([]string{"toll", "violation", "fee"}),
+		DefaultCurrency: usd,
+		MaxClockSkew:    transaction.DefaultMaxClockSkew,
+		Now:             func() time.Time { return testNow },
+	}
+}
+
+func newHarness(t *testing.T, checker *health.Checker) *harness {
+	t.Helper()
+
+	var logs bytes.Buffer
+	store := memory.New()
+
+	h := &harness{Store: store, Logs: &logs}
+
 	router, err := NewRouter(Deps{
-		Logger:  slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		Logger:  h.Logger(),
 		Health:  checker,
 		Version: "test",
+		Rules:   testRules(),
+		Store:   store,
 	})
 	require.NoError(t, err)
-	return router
+
+	h.Handler = router
+	return h
+}
+
+// Logger returns a logger writing into the harness's captured output, so tests
+// can assert on what was and was not logged.
+func (h *harness) Logger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(h.Logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 // noChecks is a Checker with no dependencies registered, for tests that care
