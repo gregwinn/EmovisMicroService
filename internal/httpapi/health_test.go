@@ -16,6 +16,7 @@ import (
 
 	"github.com/gregwinn/EmovisMicroService/internal/money"
 	"github.com/gregwinn/EmovisMicroService/internal/platform/health"
+	"github.com/gregwinn/EmovisMicroService/internal/platform/metrics"
 	"github.com/gregwinn/EmovisMicroService/internal/store/memory"
 	"github.com/gregwinn/EmovisMicroService/internal/transaction"
 )
@@ -30,8 +31,9 @@ func testRouter(t *testing.T, checker *health.Checker) http.Handler {
 type harness struct {
 	http.Handler
 
-	Store *memory.Store
-	Logs  *bytes.Buffer
+	Store   *memory.Store
+	Logs    *bytes.Buffer
+	Metrics *metrics.Metrics
 }
 
 // testNow is the clock the HTTP tests run against, so "in the future" and
@@ -55,7 +57,7 @@ func newHarness(t *testing.T, checker *health.Checker) *harness {
 	var logs bytes.Buffer
 	store := memory.New()
 
-	h := &harness{Store: store, Logs: &logs}
+	h := &harness{Store: store, Logs: &logs, Metrics: metrics.New()}
 
 	router, err := NewRouter(Deps{
 		Logger:  h.Logger(),
@@ -63,6 +65,7 @@ func newHarness(t *testing.T, checker *health.Checker) *harness {
 		Version: "test",
 		Rules:   testRules(),
 		Store:   store,
+		Metrics: h.Metrics,
 	})
 	require.NoError(t, err)
 

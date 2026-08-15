@@ -16,15 +16,31 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/gregwinn/EmovisMicroService/internal/config"
 	"github.com/gregwinn/EmovisMicroService/internal/outbox"
 	"github.com/gregwinn/EmovisMicroService/internal/platform/logging"
+	"github.com/gregwinn/EmovisMicroService/internal/platform/metrics"
 	"github.com/gregwinn/EmovisMicroService/internal/store/postgres"
 )
+
+// metricsMux serves the relay's collectors plus a liveness probe.
+func metricsMux(recorder *metrics.Metrics) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.HandlerFor(recorder.Registry(), promhttp.HandlerOpts{}))
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"up"}`))
+	})
+	return mux
+}
 
 // version is overridden at build time with -ldflags "-X main.version=...".
 var version = "dev"
@@ -68,10 +84,32 @@ func run() error {
 	}
 	defer pool.Close()
 
+	recorder := metrics.New()
+
 	relay := outbox.NewRelay(pool, outbox.NewLogPublisher(logger), logger, outbox.RelayOptions{
 		BatchSize:    cfg.OutboxBatchSize,
 		PollInterval: cfg.OutboxPollInterval,
-	})
+	}).WithMetrics(recorder)
+
+	// The relay serves its own /metrics: outbox depth and lag are the SLI for
+	// whether the resolution pipeline is hearing about transactions, and they
+	// are only observable from the process doing the draining.
+	metricsServer := &http.Server{
+		Addr:              cfg.MetricsAddr,
+		Handler:           metricsMux(recorder),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		logger.Info("relay metrics listening", slog.String("addr", cfg.MetricsAddr))
+		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("relay metrics server stopped", slog.Any("error", err))
+		}
+	}()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = metricsServer.Shutdown(shutdownCtx)
+	}()
 
 	if pending, err := relay.PendingCount(ctx); err == nil {
 		logger.Info("outbox backlog at startup", slog.Int("pending", pending))

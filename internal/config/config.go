@@ -76,6 +76,10 @@ type Config struct {
 	// OutboxPollInterval is how long the relay waits after an empty pass. A
 	// non-empty pass retries immediately, so a backlog still drains at speed.
 	OutboxPollInterval time.Duration
+
+	// MetricsAddr is where the outbox relay serves /metrics. The API serves its
+	// own on the main listener, because it already has one.
+	MetricsAddr string
 }
 
 // UsesDatabase reports whether a durable store is configured.
@@ -106,6 +110,7 @@ func Load() (Config, error) {
 
 		OutboxBatchSize:    envInt("OUTBOX_BATCH_SIZE", 100, &errs),
 		OutboxPollInterval: envDuration("OUTBOX_POLL_INTERVAL", 2*time.Second, &errs),
+		MetricsAddr:        envString("METRICS_ADDR", ":9090"),
 	}
 
 	if len(cfg.TransactionTypes) == 0 {

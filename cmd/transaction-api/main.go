@@ -22,6 +22,7 @@ import (
 	"github.com/gregwinn/EmovisMicroService/internal/money"
 	"github.com/gregwinn/EmovisMicroService/internal/platform/health"
 	"github.com/gregwinn/EmovisMicroService/internal/platform/logging"
+	"github.com/gregwinn/EmovisMicroService/internal/platform/metrics"
 	"github.com/gregwinn/EmovisMicroService/internal/store/memory"
 	"github.com/gregwinn/EmovisMicroService/internal/store/postgres"
 	"github.com/gregwinn/EmovisMicroService/internal/transaction"
@@ -76,6 +77,7 @@ func run(ctx context.Context) error {
 	})
 
 	checker := health.New(healthCheckTimeout)
+	recorder := metrics.New()
 
 	// config.Load has already verified the currency is recognised.
 	defaultCurrency, _ := money.Lookup(cfg.DefaultCurrency)
@@ -112,6 +114,7 @@ func run(ctx context.Context) error {
 		Version: version,
 		Rules:   rules,
 		Store:   store,
+		Metrics: recorder,
 	})
 	if err != nil {
 		return fmt.Errorf("build http router: %w", err)
