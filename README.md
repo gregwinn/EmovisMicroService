@@ -119,6 +119,9 @@ rather than one per restart.
 | [Assumptions](docs/assumptions.md) | Every call made without you, phrased as the question I'd have asked |
 | [Runbook](docs/runbook.md) | Alert → meaning → action |
 | [Security](docs/security.md) | PII handling, trust boundaries, what I'd change before production |
+| [AGENTS.md](AGENTS.md) | How an AI coding agent should work in this repo — the invariants it must not break |
+| [AI workflow](docs/ai-workflow.md) | How this was actually built with AI, including what went wrong |
+| [Contributing](CONTRIBUTING.md) | Branching, PR expectations, what fails CI |
 
 **If you only read two ADRs:**
 [0006](docs/adr/0006-idempotency-divergence.md) is the gap the contract
@@ -276,10 +279,34 @@ rather than `git flow finish`, so every change gets CI and a reviewable diff.
 - [x] Prometheus metrics and PII-safe logging
 - [x] Docker Compose stack with a one-command end-to-end demo
 - [ ] Terraform deployment
-- [ ] Architecture decision records and runbook
-- [ ] AI agent configuration (`AGENTS.md`)
+- [x] Architecture decision records, runbook, and domain guide
+- [x] AI agent configuration (`AGENTS.md`, `.claude/`)
 
 ---
+
+## Working with AI agents
+
+The brief asked for *"whatever configuration you'd use to tell an AI coding
+agent how to interpret the repository and how it should work in it."* That is
+two things, and both are here.
+
+**[AGENTS.md](AGENTS.md)** is the contract. One file, referenced by
+`CLAUDE.md`, so every tool works from the same rules rather than each carrying
+a drifting copy. It states the invariants that are not style preferences —
+money is never a float, generated code is never hand-edited, migrations are
+append-only, identifiers never reach logs — along with the layout, the
+dependency rule, and what to do when the spec leaves something unspecified.
+
+**`.claude/`** is the tooling. Permission rules that allow the safe commands
+without prompting and *deny* edits to generated code outright, a hook that
+formats Go on save so formatting drift never lands as unrelated diff noise, and
+slash commands for the workflows with a right answer here — recording an ADR,
+adding a validation rule, opening a PR that is small enough to review.
+
+**[docs/ai-workflow.md](docs/ai-workflow.md)** is the honest account of how this
+repo was actually built, including five confidently-wrong assumptions the
+contract's own prose corrected, and the throwaway test that caught two invented
+facts about a library in four minutes.
 
 ## License
 
