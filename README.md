@@ -4,8 +4,9 @@ A microservice that accepts, validates, and durably records billable tolling
 transactions pushed by roadside lane controllers, image-review vendors,
 interoperability peers, and batch loaders.
 
-Built against the `Transaction Ingest API` OpenAPI contract, which lands in
-`api/openapi.yaml` as the source of truth for the wire format.
+Built against the `Transaction Ingest API` OpenAPI contract in
+[`api/openapi.yaml`](api/openapi.yaml), which is the source of truth for the
+wire format — not documentation alongside it.
 
 > **Status:** in active development. See [Roadmap](#roadmap) for what is built
 > and what is still landing.
@@ -79,12 +80,37 @@ cmd/            One directory per binary
 internal/
   config/       Environment configuration, validated at startup
   httpapi/      Routing, middleware, and HTTP-to-domain adapters
+    gen/        Generated from api/openapi.yaml — never edited by hand
   platform/     Cross-cutting concerns: logging, health, metrics
 docs/           Architecture, domain notes, runbook, and ADRs
 ```
 
 Business rules never live in `internal/httpapi`. That package translates between
 the wire contract and the domain, and nothing else.
+
+### The contract is executable
+
+`api/openapi.yaml` drives two things:
+
+1. **Types and routing** are generated from it (`make generate`). The compiler
+   will not let an operation in the spec go unimplemented.
+2. **Every inbound request is validated against it at runtime**, before any
+   handler sees the body.
+
+Generated output is committed so the repo builds without a codegen toolchain,
+and CI runs `make generate-check` to fail the build if it has drifted from the
+spec. Spec and implementation cannot silently diverge.
+
+Validation failures return the contract's `Error` shape with a field-level
+breakdown:
+
+```json
+{
+  "code": 400,
+  "message": "request does not satisfy the API contract",
+  "fields": "base_amount: is required; plate.jurisdiction: is required"
+}
+```
 
 ---
 
@@ -121,7 +147,7 @@ rather than `git flow finish`, so every change gets CI and a reviewable diff.
 - [x] Service scaffolding, configuration, health probes, structured logging
 - [x] CI: lint, race-detector tests with a coverage gate, build, vulnerability
       and secret scanning
-- [ ] OpenAPI-generated types with spec validation enforced at runtime
+- [x] OpenAPI-generated types with spec validation enforced at runtime
 - [ ] Transaction domain model and semantic validation
 - [ ] Postgres persistence with idempotent ingest
 - [ ] Transactional outbox and publisher

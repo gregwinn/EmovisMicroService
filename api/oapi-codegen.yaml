@@ -1,0 +1,21 @@
+# Code generation config for api/openapi.yaml.
+#
+# Run with `make generate`. The output is committed so that a reader can build
+# the repo without a codegen toolchain, and CI fails if it has drifted from the
+# spec — see .github/workflows/ci.yml.
+package: gen
+output: internal/httpapi/gen/api.gen.go
+
+generate:
+  # Request/response types from components.schemas.
+  models: true
+  # ServerInterface plus a stdlib net/http mux binding, so the compiler enforces
+  # that every operation in the spec has an implementation.
+  std-http-server: true
+  # GetSwagger(), which the request-validation middleware uses to check inbound
+  # requests against the contract at runtime.
+  embedded-spec: true
+
+output-options:
+  # Keep the generated file readable: no unused helpers for a one-endpoint API.
+  skip-prune: false

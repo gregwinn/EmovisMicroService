@@ -55,13 +55,21 @@ func run(ctx context.Context) error {
 
 	checker := health.New(healthCheckTimeout)
 
+	// Building the router loads and parses the embedded OpenAPI contract. A
+	// malformed contract is a build-time mistake that must stop the process
+	// here rather than surface as a runtime failure on the first request.
+	router, err := httpapi.NewRouter(httpapi.Deps{
+		Logger:  logger,
+		Health:  checker,
+		Version: version,
+	})
+	if err != nil {
+		return fmt.Errorf("build http router: %w", err)
+	}
+
 	srv := &http.Server{
-		Addr: cfg.HTTPAddr,
-		Handler: httpapi.NewRouter(httpapi.Deps{
-			Logger:  logger,
-			Health:  checker,
-			Version: version,
-		}),
+		Addr:        cfg.HTTPAddr,
+		Handler:     router,
 		ReadTimeout: cfg.ReadTimeout,
 		// ReadHeaderTimeout is set explicitly to bound slow-header attacks even
 		// when ReadTimeout is relaxed for large payloads.

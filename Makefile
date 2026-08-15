@@ -10,7 +10,12 @@ GOLANGCI_LINT          := $(GOBIN)/golangci-lint
 
 BIN_DIR                := bin
 COVERAGE_FILE          := coverage.out
-COVERAGE_THRESHOLD     := 75
+COVERAGE_THRESHOLD     := 80
+
+# Generated code is verified by `make generate-check` against the spec, not by
+# tests. Measuring it would let a large generated file mask thin coverage of the
+# code that was actually written by hand.
+COVERAGE_EXCLUDE       := /internal/httpapi/gen/
 
 VERSION                ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS                := -s -w -X main.version=$(VERSION)
@@ -56,6 +61,20 @@ lint: $(GOLANGCI_LINT) ## Run the linters
 $(GOLANGCI_LINT):
 	@$(MAKE) tools
 
+##@ Contract
+
+.PHONY: generate
+generate: ## Regenerate Go code from api/openapi.yaml
+	$(GO) tool oapi-codegen -config api/oapi-codegen.yaml api/openapi.yaml
+	@echo "regenerated internal/httpapi/gen from api/openapi.yaml"
+
+.PHONY: generate-check
+generate-check: generate ## Fail if committed generated code has drifted from the spec
+	@git diff --exit-code -- internal/httpapi/gen > /dev/null \
+	  || { printf "\033[31mgenerated code is stale — run 'make generate' and commit the result\033[0m\n"; \
+	       git --no-pager diff --stat -- internal/httpapi/gen; exit 1; }
+	@echo "generated code matches the contract"
+
 ##@ Testing
 
 .PHONY: test
@@ -68,7 +87,9 @@ test-short: ## Run only fast tests (skips anything needing Docker)
 
 .PHONY: cover
 cover: ## Run tests and enforce the coverage threshold
-	$(GO) test -race -count=1 -coverprofile=$(COVERAGE_FILE) -covermode=atomic ./...
+	$(GO) test -race -count=1 -coverprofile=$(COVERAGE_FILE).raw -covermode=atomic ./...
+	@grep -v '$(COVERAGE_EXCLUDE)' $(COVERAGE_FILE).raw > $(COVERAGE_FILE)
+	@rm -f $(COVERAGE_FILE).raw
 	@$(GO) tool cover -func=$(COVERAGE_FILE) | tail -1
 	@total=$$($(GO) tool cover -func=$(COVERAGE_FILE) | tail -1 | awk '{print $$3}' | tr -d '%'); \
 	 awk -v t="$$total" -v min="$(COVERAGE_THRESHOLD)" 'BEGIN { \
@@ -93,11 +114,11 @@ run: ## Run the API server locally
 
 .PHONY: clean
 clean: ## Remove build and coverage artifacts
-	rm -rf $(BIN_DIR) $(COVERAGE_FILE)
+	rm -rf $(BIN_DIR) $(COVERAGE_FILE) $(COVERAGE_FILE).raw
 
 ##@ Meta
 
 .PHONY: ci
-ci: tidy lint cover build ## Everything CI runs, in order
+ci: tidy generate-check lint cover build ## Everything CI runs, in order
 	@echo ""
 	@echo "\033[32mAll CI checks passed.\033[0m"
