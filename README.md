@@ -278,7 +278,7 @@ rather than `git flow finish`, so every change gets CI and a reviewable diff.
 - [x] Transactional outbox and relay
 - [x] Prometheus metrics and PII-safe logging
 - [x] Docker Compose stack with a one-command end-to-end demo
-- [ ] Terraform deployment
+- [x] Terraform for AWS ECS Fargate (validated in CI; never applied)
 - [x] Architecture decision records, runbook, and domain guide
 - [x] AI agent configuration (`AGENTS.md`, `.claude/`)
 
@@ -307,6 +307,20 @@ adding a validation rule, opening a PR that is small enough to review.
 repo was actually built, including five confidently-wrong assumptions the
 contract's own prose corrected, and the throwaway test that caught two invented
 facts about a library in four minutes.
+
+## Deploying
+
+[`deploy/terraform/`](deploy/terraform/) describes the service on AWS ECS
+Fargate: ECR, multi-AZ RDS, SQS with a dead-letter queue, an internal ALB, the
+API and relay services, and the migration task.
+
+**Nothing has been applied** — no AWS account is attached to a public interview
+repository. It is formatted and validated in CI, so treat it as the deployment
+I would propose, reviewable as code.
+
+Its [README](deploy/terraform/README.md) covers the decisions worth arguing
+about, and ends with an explicit list of what is still missing before it would
+be production-ready.
 
 ## License
 
