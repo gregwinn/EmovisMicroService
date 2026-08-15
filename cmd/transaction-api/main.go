@@ -22,6 +22,7 @@ import (
 	"github.com/gregwinn/EmovisMicroService/internal/platform/health"
 	"github.com/gregwinn/EmovisMicroService/internal/platform/logging"
 	"github.com/gregwinn/EmovisMicroService/internal/store/memory"
+	"github.com/gregwinn/EmovisMicroService/internal/store/postgres"
 	"github.com/gregwinn/EmovisMicroService/internal/transaction"
 )
 
@@ -67,16 +68,22 @@ func run(ctx context.Context) error {
 		MaxClockSkew:    cfg.MaxClockSkew,
 	}
 
-	// The in-memory store keeps the service runnable with no infrastructure,
-	// which is what makes the README quickstart honest. It is not durable;
-	// Postgres replaces it behind the same interface.
-	store := memory.New()
+	store, storeName, closeStore, err := openStore(ctx, cfg, checker)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
 
 	logger.Info("ingest policy loaded",
 		slog.Any("transaction_types", rules.Types.All()),
 		slog.String("default_currency", defaultCurrency.Code),
 		slog.Duration("max_clock_skew", cfg.MaxClockSkew),
-		slog.String("store", "memory (not durable)"))
+		slog.String("store", storeName))
+
+	if !cfg.UsesDatabase() {
+		logger.Warn("running without a database: accepted transactions are held in memory and lost on restart",
+			slog.String("remedy", "set DATABASE_URL to use PostgreSQL"))
+	}
 
 	// Building the router loads and parses the embedded OpenAPI contract. A
 	// malformed contract is a build-time mistake that must stop the process
@@ -138,4 +145,38 @@ func run(ctx context.Context) error {
 
 	logger.Info("shutdown complete")
 	return nil
+}
+
+// openStore selects the durable store when a database is configured and the
+// in-memory one otherwise, registering a readiness check for whichever it
+// returns.
+//
+// Falling back rather than refusing to start is what keeps the README
+// quickstart honest: a reader can clone the repo and exercise the endpoint
+// without provisioning anything. The trade is that a deployment which *meant*
+// to have a database but lost the variable starts up looking healthy, so the
+// fallback is logged loudly at Warn.
+func openStore(
+	ctx context.Context,
+	cfg config.Config,
+	checker *health.Checker,
+) (transaction.Store, string, func(), error) {
+	if !cfg.UsesDatabase() {
+		return memory.New(), "memory (not durable)", func() {}, nil
+	}
+
+	//nolint:gosec // DatabaseMaxConns is validated positive by config.Load.
+	pool, err := postgres.Connect(ctx, cfg.DatabaseURL, int32(cfg.DatabaseMaxConns))
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("connect to database: %w", err)
+	}
+
+	store := postgres.New(pool)
+
+	// Readiness, not liveness: an unreachable database should drain this
+	// instance from the load balancer, not have the orchestrator restart a
+	// process that is otherwise fine.
+	checker.Register("database", store.Ping)
+
+	return store, "postgres", pool.Close, nil
 }

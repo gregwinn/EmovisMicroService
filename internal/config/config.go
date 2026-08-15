@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,7 +56,22 @@ type Config struct {
 	// There is no equivalent bound on the past: batch and image-review
 	// producers legitimately submit long after the vehicle passed.
 	MaxClockSkew time.Duration
+
+	// Storage.
+
+	// DatabaseURL is the PostgreSQL connection string. When empty the service
+	// falls back to the in-memory store, which keeps the quickstart runnable
+	// with no infrastructure but is not durable.
+	DatabaseURL string
+
+	// DatabaseMaxConns caps the connection pool. It wants to be a little above
+	// expected concurrency and well below the server's max_connections divided
+	// by the number of running instances.
+	DatabaseMaxConns int
 }
+
+// UsesDatabase reports whether a durable store is configured.
+func (c Config) UsesDatabase() bool { return c.DatabaseURL != "" }
 
 // Load reads configuration from the environment, applying defaults suitable for
 // local development. It returns every validation problem it finds, joined into a
@@ -76,6 +92,9 @@ func Load() (Config, error) {
 		TransactionTypes: envStringSlice("TRANSACTION_TYPES", []string{"toll", "violation", "fee"}),
 		DefaultCurrency:  strings.ToUpper(envString("DEFAULT_CURRENCY", "USD")),
 		MaxClockSkew:     envDuration("MAX_CLOCK_SKEW", transaction.DefaultMaxClockSkew, &errs),
+
+		DatabaseURL:      envString("DATABASE_URL", ""),
+		DatabaseMaxConns: envInt("DATABASE_MAX_CONNS", 10, &errs),
 	}
 
 	if len(cfg.TransactionTypes) == 0 {
@@ -123,6 +142,25 @@ func envStringSlice(key string, fallback []string) []string {
 		}
 	}
 	return values
+}
+
+// envInt parses an integer, recording a problem rather than failing fast so
+// that Load can report every error at once.
+func envInt(key string, fallback int, errs *[]error) int {
+	raw, ok := os.LookupEnv(key)
+	if !ok || raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("%s: %q is not a valid integer", key, raw))
+		return fallback
+	}
+	if n <= 0 {
+		*errs = append(*errs, fmt.Errorf("%s: must be positive, got %d", key, n))
+		return fallback
+	}
+	return n
 }
 
 // envDuration parses a duration, recording a problem rather than failing fast so
