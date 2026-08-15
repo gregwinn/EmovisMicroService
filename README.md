@@ -8,8 +8,9 @@ Built against the `Transaction Ingest API` OpenAPI contract in
 [`api/openapi.yaml`](api/openapi.yaml), which is the source of truth for the
 wire format — not documentation alongside it.
 
-> **Status:** in active development. See [Roadmap](#roadmap) for what is built
-> and what is still landing.
+> **v0.1.0** — the ingest slice is complete and running: contract-enforced
+> validation, idempotent durable ingest, and a transactional outbox feeding the
+> resolution pipeline. See the [changelog](CHANGELOG.md).
 
 ---
 
@@ -266,7 +267,7 @@ rather than `git flow finish`, so every change gets CI and a reviewable diff.
 
 ---
 
-## Roadmap
+## What is built
 
 - [x] Service scaffolding, configuration, health probes, structured logging
 - [x] CI: lint, race-detector tests with a coverage gate, build, vulnerability
