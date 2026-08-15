@@ -1,0 +1,137 @@
+# Transaction Ingest Service
+
+A microservice that accepts, validates, and durably records billable tolling
+transactions pushed by roadside lane controllers, image-review vendors,
+interoperability peers, and batch loaders.
+
+Built against the `Transaction Ingest API` OpenAPI contract, which lands in
+`api/openapi.yaml` as the source of truth for the wire format.
+
+> **Status:** in active development. See [Roadmap](#roadmap) for what is built
+> and what is still landing.
+
+---
+
+## The problem this solves
+
+A transaction is the atomic unit of revenue in a tolling back office. Ingest has
+three obligations, and getting any of them wrong costs real money:
+
+| Obligation | How it is met |
+|---|---|
+| **Never double-bill** | Idempotent on `(source, source_reference)`. Producers retry over unreliable links and replay whole files; a retry must never create a second billable record. |
+| **Never lose an accepted transaction** | The transaction row and the event announcing it are committed in a single database transaction, via a transactional outbox. |
+| **Always explain a rejection** | Validation happens in three explicit layers, and a `400` names the field and the reason. |
+
+Ingest deliberately does **not** resolve who owns the vehicle, price the
+transaction, or collect payment. Those are downstream concerns.
+
+---
+
+## Quick start
+
+**Requirements:** Go 1.25+. Docker is needed for the integration tests and the
+full local stack.
+
+```bash
+git clone git@github.com:gregwinn/EmovisMicroService.git
+cd EmovisMicroService
+
+make            # list every available target
+make ci         # tidy, lint, test with coverage, build — everything CI runs
+make run        # start the API on :8080
+```
+
+Then, in another shell:
+
+```bash
+curl -s localhost:8080/healthz | jq
+curl -s localhost:8080/readyz  | jq
+```
+
+---
+
+## Configuration
+
+Every setting is read from the environment at startup and validated once. A
+misconfigured deployment reports **all** of its problems on the first boot
+rather than one per restart.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SERVICE_NAME` | `transaction-ingest` | Identity attached to every log record |
+| `ENVIRONMENT` | `local` | Deployment environment label |
+| `HTTP_ADDR` | `:8080` | Listen address |
+| `HTTP_READ_TIMEOUT` | `5s` | Request read timeout |
+| `HTTP_WRITE_TIMEOUT` | `10s` | Response write timeout |
+| `HTTP_IDLE_TIMEOUT` | `120s` | Keep-alive idle timeout |
+| `SHUTDOWN_TIMEOUT` | `15s` | Grace period for draining in-flight requests |
+| `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+| `LOG_FORMAT` | `json` | `json` \| `text` |
+
+---
+
+## Repository layout
+
+```
+api/            OpenAPI contract — the source of truth for the wire format
+cmd/            One directory per binary
+internal/
+  config/       Environment configuration, validated at startup
+  httpapi/      Routing, middleware, and HTTP-to-domain adapters
+  platform/     Cross-cutting concerns: logging, health, metrics
+docs/           Architecture, domain notes, runbook, and ADRs
+```
+
+Business rules never live in `internal/httpapi`. That package translates between
+the wire contract and the domain, and nothing else.
+
+---
+
+## Development
+
+```bash
+make test         # race detector on everything
+make cover        # coverage report, enforced against a threshold
+make lint         # golangci-lint, pinned to the same version CI uses
+```
+
+`make ci` runs the full pipeline locally. If it passes on your machine it passes
+in GitHub Actions — the Makefile is what the workflow calls.
+
+### Branching
+
+This repo uses **git flow**:
+
+| Branch | Purpose |
+|---|---|
+| `main` | Production. Tagged releases only. |
+| `develop` | Integration branch. Features merge here first. |
+| `feature/*` | One branch per unit of work. |
+| `release/*` | Release stabilisation. |
+| `hotfix/*` | Urgent fixes off `main`. |
+
+Branches are created with `git flow`, but merged through **GitHub pull requests**
+rather than `git flow finish`, so every change gets CI and a reviewable diff.
+
+---
+
+## Roadmap
+
+- [x] Service scaffolding, configuration, health probes, structured logging
+- [x] CI: lint, race-detector tests with a coverage gate, build, vulnerability
+      and secret scanning
+- [ ] OpenAPI-generated types with spec validation enforced at runtime
+- [ ] Transaction domain model and semantic validation
+- [ ] Postgres persistence with idempotent ingest
+- [ ] Transactional outbox and publisher
+- [ ] Metrics and PII-safe logging
+- [ ] Docker Compose stack and Terraform deployment
+- [ ] Architecture decision records and runbook
+- [ ] AI agent configuration (`AGENTS.md`)
+
+---
+
+## License
+
+[MIT](LICENSE)

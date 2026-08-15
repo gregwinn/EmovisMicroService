@@ -1,0 +1,52 @@
+# golangci-lint v2 configuration.
+# Pinned to the same version CI installs — see .github/workflows/ci.yml.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose # HTTP response bodies must be closed
+    - copyloopvar
+    - errorlint # correct error wrapping / comparison
+    - gocritic
+    - misspell
+    - nilerr # returning nil after a non-nil error
+    - noctx # HTTP requests without a context
+    - revive
+    - unconvert
+    - unparam
+    - wastedassign
+    - whitespace
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+
+  exclusions:
+    generated: lax
+    rules:
+      # Test files get some slack: assertions and fixtures are noisier by nature.
+      # noctx is excluded because httptest.NewRequest is the idiomatic
+      # constructor in tests; the linter's advice targets production code that
+      # makes real network calls.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocritic
+          - noctx
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/gregwinn/EmovisMicroService

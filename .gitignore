@@ -1,0 +1,26 @@
+# Build output
+/bin/
+/dist/
+
+# Test and coverage artifacts
+*.out
+coverage.*
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Terraform (note: .terraform.lock.hcl IS committed on purpose)
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+crash.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
