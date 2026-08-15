@@ -133,6 +133,25 @@ migrate: ## Apply pending database migrations (needs DATABASE_URL)
 migrate-status: ## Show applied and pending migrations
 	$(GO) run ./cmd/migrate status
 
+##@ Local stack
+
+.PHONY: compose-up
+compose-up: ## Build and start the full stack (postgres, migrate, api, relay)
+	docker compose up --build -d
+	@echo "api on http://localhost:8080 — postgres on localhost:55432"
+
+.PHONY: compose-down
+compose-down: ## Stop the stack and remove its volumes
+	docker compose down -v
+
+.PHONY: compose-logs
+compose-logs: ## Follow logs from the stack
+	docker compose logs -f
+
+.PHONY: demo
+demo: compose-up ## Start the stack and walk the service end to end
+	@./scripts/demo.sh
+
 ##@ Build
 
 .PHONY: build

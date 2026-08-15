@@ -31,16 +31,28 @@ transaction, or collect payment. Those are downstream concerns.
 
 ## Quick start
 
-**Requirements:** Go 1.25+. Docker is needed for the integration tests and the
-full local stack.
+The fastest way to see the whole thing work:
 
 ```bash
 git clone git@github.com:gregwinn/EmovisMicroService.git
 cd EmovisMicroService
+make demo
+```
 
+That builds the images, starts PostgreSQL, applies migrations, runs the API and
+the outbox relay, then walks the service end to end: a new transaction, a
+retry, a divergent replay, a schema rejection, a semantic rejection, the stored
+row, and the event the relay published downstream.
+
+**Requirements:** Docker for `make demo` and the integration tests. Go 1.25+ to
+build and test locally.
+
+### Running it directly
+
+```bash
 make            # list every available target
-make ci         # tidy, lint, test with coverage, build — everything CI runs
-make run        # start the API on :8080
+make ci         # everything CI runs: tidy, contract, lint, cover, build, vuln
+make run        # start the API on :8080 (in-memory store, no database needed)
 ```
 
 Then, in another shell:
@@ -140,6 +152,26 @@ breakdown:
 
 ---
 
+## The local stack
+
+```bash
+make compose-up     # postgres + migrations + api + relay
+make compose-logs   # follow everything
+make compose-down   # stop and remove volumes
+```
+
+Images are **distroless static** and run as non-root — 14.4 MB, no shell, no
+package manager, no libc. There is nothing in the runtime image to exploit and
+nothing to patch, which matters for a service on an ingest boundary.
+
+That leaves no `curl` for a container healthcheck, so the binary probes itself:
+`/app -healthcheck`. Kubernetes and ECS talk to `/healthz` and `/readyz`
+directly and need none of that.
+
+Migrations run as their own compose service that exits on completion, mirroring
+production: a one-off task before the new revision is released, never inside a
+service's startup path where rolling tasks would race the same DDL.
+
 ## Development
 
 ```bash
@@ -201,7 +233,8 @@ rather than `git flow finish`, so every change gets CI and a reviewable diff.
 - [x] Postgres persistence with database-enforced idempotency
 - [x] Transactional outbox and relay
 - [ ] Metrics and PII-safe logging
-- [ ] Docker Compose stack and Terraform deployment
+- [x] Docker Compose stack with a one-command end-to-end demo
+- [ ] Terraform deployment
 - [ ] Architecture decision records and runbook
 - [ ] AI agent configuration (`AGENTS.md`)
 
