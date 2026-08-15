@@ -109,6 +109,31 @@ jobs:
       - name: Build binaries
         run: make build
 
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/terraform
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.6
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive -diff
+
+      # -backend=false: validation needs the providers, not remote state, and
+      # no credentials exist here by design.
+      - name: Initialize without a backend
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
+
   security:
     name: Security
     runs-on: ubuntu-latest

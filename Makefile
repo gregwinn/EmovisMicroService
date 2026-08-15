@@ -117,6 +117,18 @@ cover: ## Run tests and enforce the coverage threshold
 cover-html: cover ## Open the coverage report in a browser
 	$(GO) tool cover -html=$(COVERAGE_FILE)
 
+##@ Infrastructure
+
+.PHONY: tf-fmt
+tf-fmt: ## Format the Terraform
+	terraform -chdir=deploy/terraform fmt -recursive
+
+.PHONY: tf-validate
+tf-validate: ## Validate the Terraform (no credentials needed)
+	terraform -chdir=deploy/terraform init -backend=false -input=false > /dev/null
+	terraform -chdir=deploy/terraform fmt -check -recursive -diff
+	terraform -chdir=deploy/terraform validate
+
 ##@ Security
 
 .PHONY: vuln
