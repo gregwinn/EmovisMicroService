@@ -40,6 +40,9 @@ const (
 type Metrics struct {
 	registry *prometheus.Registry
 
+	// sources bounds producer-supplied label values. See labels.go.
+	sources *sourceLabels
+
 	ingestTotal       *prometheus.CounterVec
 	ingestDuration    *prometheus.HistogramVec
 	validationFailure *prometheus.CounterVec
@@ -49,7 +52,8 @@ type Metrics struct {
 	outboxOldestAge prometheus.Gauge
 	outboxPublished *prometheus.CounterVec
 
-	httpRequests *prometheus.CounterVec
+	httpRequests        *prometheus.CounterVec
+	sourceLabelsTracked prometheus.GaugeFunc
 }
 
 // New builds the metric set and its registry.
@@ -58,6 +62,7 @@ func New() *Metrics {
 
 	m := &Metrics{
 		registry: registry,
+		sources:  newSourceLabels(maxTrackedSources),
 
 		ingestTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ingest_transactions_total",
@@ -108,7 +113,19 @@ func New() *Metrics {
 			Name: "http_requests_total",
 			Help: "HTTP requests by method, route, and status.",
 		}, []string{"method", "route", "status"}),
+
+		sourceLabelsTracked: prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "ingest_source_labels_tracked",
+			Help: "Distinct producer labels tracked. At the ceiling, further producers are counted as \"other\".",
+		}, func() float64 { return 0 }),
 	}
+
+	// The gauge needs the labeller, which does not exist until the struct is
+	// built, so it is replaced once m is available.
+	m.sourceLabelsTracked = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "ingest_source_labels_tracked",
+		Help: "Distinct producer labels tracked. At the ceiling, further producers are counted as \"other\".",
+	}, func() float64 { return float64(m.sources.tracked()) })
 
 	registry.MustRegister(
 		m.ingestTotal,
@@ -119,6 +136,7 @@ func New() *Metrics {
 		m.outboxOldestAge,
 		m.outboxPublished,
 		m.httpRequests,
+		m.sourceLabelsTracked,
 		// Go runtime and process metrics: cheap, and the first thing anyone
 		// looks at when the service is behaving strangely.
 		collectors.NewGoCollector(),
@@ -133,7 +151,7 @@ func (m *Metrics) Registry() *prometheus.Registry { return m.registry }
 
 // IngestResult records the outcome of a transaction push.
 func (m *Metrics) IngestResult(source, result string, took time.Duration) {
-	m.ingestTotal.WithLabelValues(source, result).Inc()
+	m.ingestTotal.WithLabelValues(m.sources.label(source), result).Inc()
 	m.ingestDuration.WithLabelValues(result).Observe(took.Seconds())
 }
 
@@ -141,18 +159,19 @@ func (m *Metrics) IngestResult(source, result string, took time.Duration) {
 //
 // The field name is a label; the field *value* never is. Plate numbers are PII
 // and would also blow the cardinality budget — a label whose values are
-// unbounded turns one metric into millions of time series.
+// unbounded turns one metric into millions of time series. The producer's
+// `source` is bounded for the same reason; see labels.go.
 func (m *Metrics) ValidationFailure(source, layer, field string) {
 	if field == "" {
 		field = "request"
 	}
-	m.validationFailure.WithLabelValues(source, layer, field).Inc()
+	m.validationFailure.WithLabelValues(m.sources.label(source), layer, field).Inc()
 }
 
 // DivergentReplay records a duplicate whose content differed from the stored
 // transaction.
 func (m *Metrics) DivergentReplay(source string) {
-	m.divergentReplay.WithLabelValues(source).Inc()
+	m.divergentReplay.WithLabelValues(m.sources.label(source)).Inc()
 }
 
 // OutboxBacklog records the current unpublished depth and the age of the oldest

@@ -133,7 +133,7 @@ func TestReadinessReturns503WhenADependencyIsDown(t *testing.T) {
 	var report health.Report
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &report))
 	assert.Equal(t, health.StatusDown, report.Status)
-	assert.Equal(t, "connection refused", report.Checks["queue"].Error)
+	assert.Equal(t, "unavailable", report.Checks["queue"].Reason)
 }
 
 // Probe endpoints are GET-only; the stdlib mux enforces the method from the
