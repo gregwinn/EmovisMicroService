@@ -10,12 +10,22 @@ GOLANGCI_LINT          := $(GOBIN)/golangci-lint
 
 BIN_DIR                := bin
 COVERAGE_FILE          := coverage.out
-COVERAGE_THRESHOLD     := 80
+COVERAGE_THRESHOLD     := 85
 
-# Generated code is verified by `make generate-check` against the spec, not by
-# tests. Measuring it would let a large generated file mask thin coverage of the
-# code that was actually written by hand.
-COVERAGE_EXCLUDE       := /internal/httpapi/gen/
+# Two things are excluded from the coverage figure, each for a stated reason:
+#
+#   internal/httpapi/gen  generated from the OpenAPI spec and verified by
+#                         `make generate-check`, not by tests. Measuring it
+#                         would let a large generated file mask thin coverage
+#                         of hand-written code.
+#   cmd/                  process wiring — flag parsing, signal handling,
+#                         dependency construction. It is exercised end to end
+#                         by `make demo` and by running the binaries, which is
+#                         a more honest check than a unit test that asserts
+#                         main() called New().
+#
+# Everything else counts, and the threshold is set high enough that it bites.
+COVERAGE_EXCLUDE       := -e /internal/httpapi/gen/ -e /cmd/
 
 VERSION                ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS                := -s -w -X main.version=$(VERSION)
@@ -91,8 +101,11 @@ test-integration: ## Run only the integration tests (requires Docker)
 
 .PHONY: cover
 cover: ## Run tests and enforce the coverage threshold
-	$(GO) test -race -count=1 -coverprofile=$(COVERAGE_FILE).raw -covermode=atomic ./...
-	@grep -v '$(COVERAGE_EXCLUDE)' $(COVERAGE_FILE).raw > $(COVERAGE_FILE)
+	# -coverpkg=./... attributes coverage across package boundaries. Without it
+	# the outbox relay reads as untested, because the tests that exercise it
+	# live in the postgres package alongside the database it talks to.
+	$(GO) test -race -count=1 -coverpkg=./... -coverprofile=$(COVERAGE_FILE).raw -covermode=atomic ./...
+	@grep -v $(COVERAGE_EXCLUDE) $(COVERAGE_FILE).raw > $(COVERAGE_FILE)
 	@rm -f $(COVERAGE_FILE).raw
 	@$(GO) tool cover -func=$(COVERAGE_FILE) | tail -1
 	@total=$$($(GO) tool cover -func=$(COVERAGE_FILE) | tail -1 | awk '{print $$3}' | tr -d '%'); \

@@ -20,6 +20,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/gregwinn/EmovisMicroService/internal/money"
+	"github.com/gregwinn/EmovisMicroService/internal/outbox"
 	"github.com/gregwinn/EmovisMicroService/internal/transaction"
 )
 
@@ -115,13 +116,51 @@ SELECT
 FROM transactions
 WHERE source = $1 AND source_reference = $2`
 
+const insertOutboxEvent = `
+INSERT INTO outbox_events (event_id, event_type, aggregate_id, payload, created_at)
+VALUES ($1, $2, $3, $4, $5)`
+
 // Ingest records tx, or returns the transaction already stored under its
 // idempotency key.
+//
+// When the transaction is new, the row and its outbox event are written in a
+// single database transaction. That atomicity is the entire point: a commit
+// that succeeds without its event would leave a billable transaction that the
+// resolution pipeline never hears about, and nothing would report an error.
+// See docs/adr/0007-transactional-outbox.md.
+//
+// No event is written for a duplicate. The original push already produced one,
+// and a retry is not a second business event.
 func (s *Store) Ingest(ctx context.Context, tx transaction.Transaction) (transaction.IngestOutcome, error) {
+	dbTx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return transaction.IngestOutcome{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	// Rollback is a no-op once Commit has succeeded, so this is safe
+	// unconditionally and guarantees no connection is leaked on an early return.
+	defer func() { _ = dbTx.Rollback(ctx) }()
+
+	outcome, err := s.ingestInTx(ctx, dbTx, tx)
+	if err != nil {
+		return transaction.IngestOutcome{}, err
+	}
+
+	if err := dbTx.Commit(ctx); err != nil {
+		return transaction.IngestOutcome{}, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return outcome, nil
+}
+
+func (s *Store) ingestInTx(
+	ctx context.Context,
+	dbTx pgx.Tx,
+	tx transaction.Transaction,
+) (transaction.IngestOutcome, error) {
 	fingerprint := tx.Fingerprint()
 
 	var inserted uuid.UUID
-	err := s.pool.QueryRow(ctx, insertTransaction,
+	err := dbTx.QueryRow(ctx, insertTransaction,
 		tx.ID,
 		tx.Source,
 		tx.SourceReference,
@@ -146,13 +185,16 @@ func (s *Store) Ingest(ctx context.Context, tx transaction.Transaction) (transac
 
 	switch {
 	case err == nil:
+		if err := s.writeOutboxEvent(ctx, dbTx, tx); err != nil {
+			return transaction.IngestOutcome{}, err
+		}
 		return transaction.IngestOutcome{Transaction: tx, Duplicate: false}, nil
 
 	case errors.Is(err, pgx.ErrNoRows):
 		// The key already existed. Read back what is actually stored — the
 		// contract requires returning the existing record, not the one just
 		// rejected.
-		existing, stored, readErr := s.getByKey(ctx, transaction.KeyOf(tx))
+		existing, stored, readErr := s.getByKeyTx(ctx, dbTx, transaction.KeyOf(tx))
 		if readErr != nil {
 			return transaction.IngestOutcome{}, fmt.Errorf("read existing transaction: %w", readErr)
 		}
@@ -168,16 +210,53 @@ func (s *Store) Ingest(ctx context.Context, tx transaction.Transaction) (transac
 	}
 }
 
+// writeOutboxEvent queues the downstream notification inside the caller's
+// database transaction.
+//
+// A failure here rolls back the transaction row too, which is the correct
+// outcome: a billable record the pipeline will never be told about is worse
+// than a producer retry. Producers retry; unnoticed revenue loss does not
+// correct itself.
+func (s *Store) writeOutboxEvent(ctx context.Context, dbTx pgx.Tx, tx transaction.Transaction) error {
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("generate event id: %w", err)
+	}
+
+	event, err := outbox.NewTransactionReceived(tx, eventID)
+	if err != nil {
+		return fmt.Errorf("build outbox event: %w", err)
+	}
+
+	if _, err := dbTx.Exec(ctx, insertOutboxEvent,
+		event.ID, event.Type, event.AggregateID, event.Payload, event.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("queue outbox event: %w", err)
+	}
+
+	return nil
+}
+
 // Get returns the transaction stored under key.
 func (s *Store) Get(ctx context.Context, key transaction.Key) (transaction.Transaction, error) {
 	tx, _, err := s.getByKey(ctx, key)
 	return tx, err
 }
 
+// querier is satisfied by both *pgxpool.Pool and pgx.Tx, so reads work the same
+// whether or not they are inside an open database transaction.
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // getByKey also returns the stored fingerprint, which Ingest needs and callers
 // of Get do not.
 func (s *Store) getByKey(ctx context.Context, key transaction.Key) (transaction.Transaction, string, error) {
-	row := s.pool.QueryRow(ctx, selectByKey, key.Source, key.SourceReference)
+	return s.getByKeyTx(ctx, s.pool, key)
+}
+
+func (s *Store) getByKeyTx(ctx context.Context, q querier, key transaction.Key) (transaction.Transaction, string, error) {
+	row := q.QueryRow(ctx, selectByKey, key.Source, key.SourceReference)
 
 	var (
 		tx                                       transaction.Transaction

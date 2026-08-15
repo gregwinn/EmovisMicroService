@@ -93,9 +93,15 @@ func newStore(t *testing.T) *postgres.Store {
 		t.Skip("integration test: requires Docker")
 	}
 
-	_, err := testPool.Exec(t.Context(), "TRUNCATE transactions")
+	_, err := testPool.Exec(t.Context(), "TRUNCATE transactions, outbox_events")
 	require.NoError(t, err)
 
+	return postgres.New(testPool)
+}
+
+// newStoreNoTruncate is for tests that have already reset the tables
+// themselves and want to control exactly what is in them.
+func newStoreNoTruncate() *postgres.Store {
 	return postgres.New(testPool)
 }
 

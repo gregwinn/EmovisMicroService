@@ -68,6 +68,14 @@ type Config struct {
 	// expected concurrency and well below the server's max_connections divided
 	// by the number of running instances.
 	DatabaseMaxConns int
+
+	// Outbox relay.
+
+	// OutboxBatchSize caps how many events one relay pass claims.
+	OutboxBatchSize int
+	// OutboxPollInterval is how long the relay waits after an empty pass. A
+	// non-empty pass retries immediately, so a backlog still drains at speed.
+	OutboxPollInterval time.Duration
 }
 
 // UsesDatabase reports whether a durable store is configured.
@@ -95,6 +103,9 @@ func Load() (Config, error) {
 
 		DatabaseURL:      envString("DATABASE_URL", ""),
 		DatabaseMaxConns: envInt("DATABASE_MAX_CONNS", 10, &errs),
+
+		OutboxBatchSize:    envInt("OUTBOX_BATCH_SIZE", 100, &errs),
+		OutboxPollInterval: envDuration("OUTBOX_POLL_INTERVAL", 2*time.Second, &errs),
 	}
 
 	if len(cfg.TransactionTypes) == 0 {
