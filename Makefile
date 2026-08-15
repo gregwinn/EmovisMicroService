@@ -100,6 +100,12 @@ cover: ## Run tests and enforce the coverage threshold
 cover-html: cover ## Open the coverage report in a browser
 	$(GO) tool cover -html=$(COVERAGE_FILE)
 
+##@ Security
+
+.PHONY: vuln
+vuln: ## Check dependencies and the toolchain for known vulnerabilities
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
 ##@ Build
 
 .PHONY: build
@@ -119,6 +125,6 @@ clean: ## Remove build and coverage artifacts
 ##@ Meta
 
 .PHONY: ci
-ci: tidy generate-check lint cover build ## Everything CI runs, in order
+ci: tidy generate-check lint cover build vuln ## Everything CI runs, in order
 	@echo ""
 	@echo "\033[32mAll CI checks passed.\033[0m"

@@ -1,6 +1,6 @@
 module github.com/gregwinn/EmovisMicroService
 
-go 1.25.1
+go 1.25.13
 
 require (
 	github.com/getkin/kin-openapi v0.146.0
