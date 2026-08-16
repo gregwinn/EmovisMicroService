@@ -5,6 +5,9 @@ on:
     branches: [main, develop, "feature/**", "release/**", "hotfix/**"]
   pull_request:
     branches: [main, develop]
+  # Callable so the release workflow runs exactly these checks rather than a
+  # copy of them that can drift.
+  workflow_call:
 
 # Least privilege by default; jobs opt in to more where they need it.
 permissions:

@@ -42,6 +42,50 @@ locally, which skips CI and leaves no reviewable diff. Both protected branches
 require passing checks, so the PR route is the only one that actually works —
 and it is what you would want anyway.
 
+## Releasing
+
+Run **Release · Prepare** from the Actions tab, on `develop`, and pick
+`patch` / `minor` / `major`. There is a `dry_run` option that works out the
+version and stops.
+
+It will:
+
+1. Refuse to run on anything but `develop`
+2. Run the full CI — the same workflow every PR runs, called rather than copied
+3. Build all three container images (not pushed — publishing belongs to the tag)
+4. Terraform plan, or validate where no deployment credentials are configured
+5. Create or update the maintenance branch `release/X.Y.x`
+6. Move the changelog's `Unreleased` section into the new version
+7. Open a PR into `main`, and a sync PR back into `develop`
+
+**Merging the `main` PR tags the release** — that is the only way a tag gets
+created here, so a tag always means "this is on `main`", never "this was
+proposed once". The tag then publishes the multi-arch images.
+
+### Hotfixes
+
+Branch from the maintenance line, not `main`:
+
+```bash
+git checkout release/0.2.x
+git checkout -b hotfix/fix-the-thing
+# ... fix, PR back into release/0.2.x ...
+```
+
+Then run **Release · Prepare** with `patch`. It reuses the existing
+`release/0.2.x` and merges `develop` into it, so the hotfix is preserved rather
+than overwritten.
+
+The maintenance branch is `release/0.2.x`, not `release/0.2.0`, precisely
+because patches accumulate on it — the name stays true.
+
+### One setup note
+
+Tags pushed with the default `GITHUB_TOKEN` **cannot start another workflow**.
+Without a `RELEASE_TOKEN` secret the release is still tagged, but the image
+publish has to be started by hand; the workflow summary says so when that
+happens.
+
 ## Pull requests
 
 **Keep them small.** One reviewable idea each. If a change touches a value type,
