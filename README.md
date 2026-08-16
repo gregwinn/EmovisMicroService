@@ -114,6 +114,7 @@ rather than one per restart.
 | Document | For |
 |---|---|
 | [Architecture](docs/architecture.md) | How the pieces fit and why they are arranged this way |
+| [Flows](docs/flows.md) | The same thing in nine diagrams — start here if you think visually |
 | [The Domain](docs/domain.md) | What a tolling transaction is — written for someone new to tolling |
 | [API](docs/api.md) | Behaviour the schema cannot state · [runnable requests](docs/requests.http) |
 | [Decisions (ADRs)](docs/adr/) | Twelve one-page records of what was decided and what it cost |

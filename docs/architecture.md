@@ -2,6 +2,10 @@
 
 How the pieces fit, and why they are arranged this way.
 
+If you think better in pictures, [flows.md](flows.md) covers the same ground in
+nine diagrams — the request path, the idempotency decision, the outbox
+lifecycle, and the data model.
+
 ## The shape of the problem
 
 A producing system pushes one billable tolling transaction. The service has
