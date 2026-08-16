@@ -60,6 +60,11 @@ The service accepts data from systems it does not control.
 |---|---|
 | Malformed or hostile JSON | Validated against the OpenAPI contract before any handler runs |
 | Oversized fields | `maxLength` from the contract, enforced by the validator |
+| **Oversized request body** | Capped at 1 MiB by `http.MaxBytesReader`, before anything reads it. Over the limit is a `413` naming the limit. |
+| **Unbounded reflection** | Producer values repeated in an error are truncated. The contract puts no `maxLength` on `transaction_type`. |
+| **Metrics cardinality via `source`** | Producer-supplied label values are capped at 200 distinct; the rest collapse into `other`. |
+| **Readiness disclosure** | `/readyz` returns `unavailable`; the driver error naming host, port, and user goes to the logs. |
+| Deeply nested JSON | Rejected with a `400`; the process survives. Verified against 50k-deep nesting. |
 | SQL injection | Parameterised queries throughout; no string-built SQL |
 | Slowloris | `ReadHeaderTimeout` set explicitly, independent of `ReadTimeout` |
 | Panic as denial of service | Recovery middleware; one request cannot take down a process serving others |
@@ -94,6 +99,33 @@ just the access one.
 - Dependencies are few and deliberate — see
   [ADR-0001](adr/0001-go-and-stdlib-http.md).
 
+## Findings from a security pass
+
+The service was probed while running, not just read. Four issues were found and
+fixed; each has a regression test that fails without its fix.
+
+| # | Issue | Measured before the fix | After |
+|---|---|---|---|
+| 1 | **No request body limit** | A 61 MB body was accepted with `201`, cost ~128 MB of heap, and was stored permanently in `metadata` | `413`, heap +5 MB |
+| 2 | **Unbounded metric cardinality** | 300 distinct `source` values produced 302 Prometheus series, on an unauthenticated endpoint | 400 producers → 201 series, capped |
+| 3 | **Unbounded reflection** | A 4 MB `transaction_type` was echoed back verbatim — a 4 MB error response | 488 KB in → 175 bytes out |
+| 4 | **Readiness disclosure** | `/readyz` published the database host, port, user, and database name to anyone who could reach it | `unavailable`; detail to the logs |
+
+Issues 1 and 2 are the ones that mattered. Both are trivially reachable on an
+endpoint the contract declares unauthenticated, and both exhaust memory — issue
+2 takes the monitoring backend with it, which is what you need most while under
+attack.
+
+Issue 2 is worth dwelling on as a mistake: the cardinality risk on the *route*
+label had already been reasoned about and defended, while `source` — the label
+an attacker actually controls — was left unbounded a few lines away.
+
+Checked and found sound: SQL is parameterised throughout with no string-built
+queries; deeply nested JSON is rejected without exhausting the stack; reflected
+input is JSON-escaped and correctly typed; error responses are smaller than
+their requests; the database password never appears in logs or in `/readyz`;
+`govulncheck` is clean and `gitleaks` finds nothing across all 32 commits.
+
 ## What I would change before production
 
 In priority order.
@@ -104,7 +136,9 @@ In priority order.
    terminate cleanly at an ALB or service mesh. Bind each certificate to an
    allowed `source` set.
 2. **Rate-limit per producer.** A looping lane controller should degrade its own
-   throughput, not everyone's.
+   throughput, not everyone's. The body limit bounds a single request; nothing
+   currently bounds the *rate*, which is the remaining denial-of-service gap
+   and the first thing I would add after authentication.
 3. **Encrypt at rest and restrict access.** RDS encryption is in the Terraform;
    what is missing is a policy on who can read the `transactions` table, because
    that table is a movement database.

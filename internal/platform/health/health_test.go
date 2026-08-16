@@ -29,7 +29,7 @@ func TestReadyAllChecksPass(t *testing.T) {
 	assert.Equal(t, StatusUp, report.Status)
 	require.Len(t, report.Checks, 2)
 	assert.Equal(t, StatusUp, report.Checks["database"].Status)
-	assert.Empty(t, report.Checks["database"].Error)
+	assert.Empty(t, report.Checks["database"].Reason)
 }
 
 func TestReadyOneFailingCheckFailsTheReport(t *testing.T) {
@@ -42,7 +42,10 @@ func TestReadyOneFailingCheckFailsTheReport(t *testing.T) {
 	assert.Equal(t, StatusDown, report.Status)
 	assert.Equal(t, StatusUp, report.Checks["database"].Status)
 	assert.Equal(t, StatusDown, report.Checks["queue"].Status)
-	assert.Equal(t, "connection refused", report.Checks["queue"].Error)
+	assert.Equal(t, reasonUnavailable, report.Checks["queue"].Reason,
+		"the caller is told only that it is unavailable")
+	assert.Equal(t, "connection refused", report.Checks["queue"].Detail,
+		"the real error is kept for the logs")
 }
 
 // A dependency that hangs must not hang the probe. Without a per-check timeout,
@@ -64,7 +67,7 @@ func TestReadyBoundsEachCheckByTimeout(t *testing.T) {
 
 	assert.Equal(t, StatusDown, report.Status)
 	assert.Less(t, time.Since(start), time.Second, "probe should return as soon as the check times out")
-	assert.Contains(t, report.Checks["slow"].Error, "deadline exceeded")
+	assert.Contains(t, report.Checks["slow"].Detail, "deadline exceeded")
 }
 
 // Checks run concurrently, so total probe latency tracks the slowest dependency

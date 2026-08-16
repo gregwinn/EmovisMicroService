@@ -50,6 +50,7 @@ type Deps struct {
 // Middleware order is load-bearing and reads outermost first:
 //
 //	RequestID — so every later layer can log a correlation id
+//	MaxBody   — before anything reads the body, including the validator
 //	Logger    — outside Recover, so a panic still produces an access log line
 //	Metrics   — likewise: a panic must still be counted as a 500
 //	Recover   — closest to the handlers it protects
@@ -69,7 +70,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", handleLive())
-	mux.HandleFunc("GET /readyz", handleReady(d.Health))
+	mux.HandleFunc("GET /readyz", handleReady(d.Health, d.Logger))
 	mux.Handle("GET /metrics", promhttp.HandlerFor(d.Metrics.Registry(), promhttp.HandlerOpts{}))
 
 	server := &ingestServer{
@@ -93,6 +94,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	return middleware.Chain(mux,
 		middleware.RequestID,
+		// Outermost of the body-touching layers: nothing downstream, including
+		// contract validation, may read an unbounded request.
+		middleware.MaxBody(middleware.DefaultMaxBodyBytes),
 		middleware.Logger(d.Logger),
 		middleware.Metrics(d.Metrics),
 		middleware.Recover(d.Logger),
