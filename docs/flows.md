@@ -8,6 +8,40 @@ and the source is reviewable in a diff.
 
 ---
 
+## The whole thing in one picture
+
+One transaction, nothing going wrong. Everything below is a detail of this.
+
+```mermaid
+flowchart LR
+    P["Producer<br/>roadside · vendor · peer"]
+    A["Ingest API<br/>checks it"]
+    DB[("Database")]
+    R["Outbox relay"]
+    Q(["Queue"])
+    RES["Resolution pipeline<br/>downstream"]
+
+    P -->|"1 · POST transaction"| A
+    A -->|"2 · save transaction<br/>+ notify note<br/>ONE commit"| DB
+    A -.->|"3 · 201 Created"| P
+    DB -->|"4 · read pending notes"| R
+    R -->|"5 · publish"| Q
+    Q -->|"6 · consume"| RES
+```
+
+**Steps 1–3 are synchronous** — the producer waits and gets an answer.
+**Steps 4–6 happen afterwards**, on their own, usually within a second or two.
+
+The load-bearing detail is step 2: the transaction and the note telling the
+pipeline about it are saved **together**. There is no moment where one exists
+without the other, which is why a crash can delay a notification but never lose
+one.
+
+Step 4 is a poll, not a push — the relay asks the database for unpublished
+notes every couple of seconds. Nothing has to tell it.
+
+---
+
 ## 1. Who talks to what
 
 Four producers, one endpoint, one downstream consumer. The resolution pipeline
