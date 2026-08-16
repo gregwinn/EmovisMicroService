@@ -1,0 +1,372 @@
+name: Release · Prepare
+
+# Cuts a release from develop.
+#
+# It runs the full CI, works out the next version, opens the maintenance branch
+# that hotfixes will land on, updates the changelog, proves the images build and
+# the infrastructure plan is clean, and opens the pull requests that put main
+# and develop back in sync.
+#
+# It does not deploy, and it does not tag. Tagging happens when the pull request
+# into main merges — see release-tag.yml — so a tag always means "this is on
+# main", never "this was proposed once".
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which part of the version to increase"
+        required: true
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+      dry_run:
+        description: "Work out the version and stop, changing nothing"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # One release at a time. Two concurrent runs would race the same branch.
+  group: release-prepare
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # A release must not be cut from a branch that is not develop, and must not be
+  # cut from a develop that is failing.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Guard
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      line: ${{ steps.version.outputs.line }}
+      previous: ${{ steps.version.outputs.previous }}
+    steps:
+      - name: Refuse anything but develop
+        if: github.ref != 'refs/heads/develop'
+        run: |
+          echo "::error::Releases are cut from develop. This ran on ${{ github.ref }}."
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Work out the next version
+        id: version
+        run: |
+          set -euo pipefail
+
+          previous=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          previous=${previous:-v0.0.0}
+
+          if [[ ! $previous =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Latest tag '$previous' is not vMAJOR.MINOR.PATCH."
+            exit 1
+          fi
+          major=${BASH_REMATCH[1]}; minor=${BASH_REMATCH[2]}; patch=${BASH_REMATCH[3]}
+
+          case "${{ inputs.bump }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+
+          version="${major}.${minor}.${patch}"
+
+          # The maintenance line, not the exact version: hotfixes land here and
+          # become 0.2.1, 0.2.2, so the branch name stays true as patches
+          # accumulate.
+          line="release/${major}.${minor}.x"
+
+          if git rev-parse "v${version}" >/dev/null 2>&1; then
+            echo "::error::Tag v${version} already exists. Pick a different bump."
+            exit 1
+          fi
+
+          {
+            echo "version=${version}"
+            echo "tag=v${version}"
+            echo "line=${line}"
+            echo "previous=${previous}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Release ${{ steps.version.outputs.tag }}
+
+          | | |
+          |---|---|
+          | Previous | \`${{ steps.version.outputs.previous }}\` |
+          | Bump | \`${{ inputs.bump }}\` |
+          | New version | \`${{ steps.version.outputs.tag }}\` |
+          | Maintenance branch | \`${{ steps.version.outputs.line }}\` |
+          | Dry run | \`${{ inputs.dry_run }}\` |
+          EOF
+
+  # ---------------------------------------------------------------------------
+  # Exactly the checks every pull request runs — called, not copied, so the two
+  # cannot drift.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Verify
+    needs: guard
+    uses: ./.github/workflows/ci.yml
+
+  # ---------------------------------------------------------------------------
+  # Prove the release artifact builds. Images are not pushed here: publishing
+  # belongs to the tag, and the tag belongs to main.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build images
+    needs: [guard, verify]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        binary: [transaction-api, outbox-relay, migrate]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.binary }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          # Single architecture here. This job answers "does it build"; the
+          # multi-arch publish happens once, on the tag.
+          platforms: linux/amd64
+          push: false
+          build-args: |
+            BINARY=${{ matrix.binary }}
+            VERSION=${{ needs.guard.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # The deployment dry run. No apply, ever.
+  # ---------------------------------------------------------------------------
+  plan:
+    name: Terraform plan
+    needs: [guard, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC, so no long-lived AWS keys exist anywhere
+    defaults:
+      run:
+        working-directory: deploy/terraform
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.6
+          terraform_wrapper: false
+
+      - name: Are deployment credentials configured?
+        id: creds
+        run: echo "available=${{ secrets.AWS_ROLE_ARN != '' }}" >> "$GITHUB_OUTPUT"
+
+      # Always meaningful, credentials or not.
+      - name: Validate
+        run: |
+          terraform init -backend=false -input=false
+          terraform fmt -check -recursive -diff
+          terraform validate
+
+      - name: Assume the deployment role
+        if: steps.creds.outputs.available == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Plan
+        if: steps.creds.outputs.available == 'true'
+        run: |
+          terraform init -input=false -backend-config="${{ vars.TF_BACKEND_CONFIG }}"
+          terraform plan -input=false -lock=false \
+            -var-file="${{ vars.TF_VAR_FILE }}" \
+            -var "image_tag=${{ needs.guard.outputs.tag }}" \
+            -out=tfplan
+          terraform show -no-color tfplan | tail -100 >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain the skip
+        if: steps.creds.outputs.available != 'true'
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ### Terraform plan skipped
+
+          No `AWS_ROLE_ARN` secret is configured, so there is no account to plan
+          against. The configuration was still formatted and validated.
+
+          This is deliberate for a public repository: no credentials exist here.
+          Set `AWS_ROLE_ARN`, and the `AWS_REGION`, `TF_BACKEND_CONFIG`, and
+          `TF_VAR_FILE` variables, and this job plans the real change.
+          EOF
+
+  # ---------------------------------------------------------------------------
+  # Cut the branch, write the changelog, open the pull requests.
+  # ---------------------------------------------------------------------------
+  prepare:
+    name: Prepare release
+    needs: [guard, verify, build, plan]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      TAG: ${{ needs.guard.outputs.tag }}
+      LINE: ${{ needs.guard.outputs.line }}
+      PREVIOUS: ${{ needs.guard.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: develop
+
+      - name: Identify as the workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # The maintenance line may already exist from an earlier patch on the same
+      # minor version. Reset it to develop only when it is new; otherwise a
+      # release would silently discard hotfixes that live on it.
+      - name: Open or reuse the maintenance branch
+        id: branch
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin "$LINE" >/dev/null 2>&1; then
+            echo "::notice::$LINE already exists; releasing from develop onto it."
+            git fetch origin "$LINE:$LINE"
+            git checkout "$LINE"
+            git merge --no-edit origin/develop
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            git checkout -b "$LINE"
+            echo "created=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Move Unreleased into ${{ env.TAG }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess, datetime, pathlib
+
+          version  = os.environ["VERSION"]
+          previous = os.environ["PREVIOUS"]
+          today    = datetime.date.today().isoformat()
+          repo     = "gregwinn/EmovisMicroService"
+
+          path = pathlib.Path("CHANGELOG.md")
+          text = path.read_text()
+
+          # Everything between "## [Unreleased]" and the next "## [" heading.
+          m = re.search(r"## \[Unreleased\]\n(.*?)(?=\n## \[)", text, re.S)
+          notes = m.group(1).strip() if m else ""
+
+          if not notes:
+              log = subprocess.run(
+                  ["git", "log", f"{previous}..HEAD", "--no-merges", "--pretty=- %s"],
+                  capture_output=True, text=True, check=True).stdout.strip()
+              notes = (
+                  "> ⚠️ The Unreleased section was empty when this release was cut.\n"
+                  "> The commits below are a starting point — edit them into real\n"
+                  "> release notes before merging.\n\n" + (log or "- No changes recorded.")
+              )
+              print("::warning::CHANGELOG had no Unreleased entries; generated a draft from commits.")
+
+          text = text.replace(
+              "## [Unreleased]\n" + (m.group(1) if m else ""),
+              f"## [Unreleased]\n\n## [{version}] — {today}\n\n{notes}\n",
+              1)
+
+          # Keep the compare links at the foot of the file honest.
+          text = re.sub(
+              r"\[Unreleased\]: .*",
+              f"[Unreleased]: https://github.com/{repo}/compare/v{version}...HEAD",
+              text, count=1)
+          text = text.replace(
+              f"[Unreleased]: https://github.com/{repo}/compare/v{version}...HEAD",
+              f"[Unreleased]: https://github.com/{repo}/compare/v{version}...HEAD\n"
+              f"[{version}]: https://github.com/{repo}/releases/tag/v{version}",
+              1)
+
+          path.write_text(text)
+          PY
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git add CHANGELOG.md
+          git commit -m "chore(release): prepare ${TAG}" \
+                     -m "Cut from develop by the release workflow. Tagging happens when the pull request into main merges."
+          git push origin "$LINE"
+
+      - name: Open the release pull request into main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create --base main --head "$LINE" \
+            --title "release: ${TAG}" \
+            --body "$(cat <<EOF
+          Prepared by [Release · Prepare](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+          | | |
+          |---|---|
+          | Version | \`${TAG}\` |
+          | Previous | \`${PREVIOUS}\` |
+          | Bump | \`${{ inputs.bump }}\` |
+          | Maintenance branch | \`${LINE}\` |
+
+          ## Verified before this was opened
+
+          - Full CI on develop — lint, contract drift, race tests behind the coverage gate, build, vulnerability scan, Terraform validate
+          - All three container images build
+          - Terraform plan (or validate, where no deployment credentials are configured)
+
+          ## What happens on merge
+
+          \`${TAG}\` is tagged on main automatically, which publishes the
+          multi-arch images. Hotfixes go to \`${LINE}\`, never to main directly.
+
+          **Check the changelog entry reads well before merging** — if the
+          Unreleased section was empty it was drafted from commit subjects.
+          EOF
+          )"
+
+      - name: Open the sync pull request into develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create --base develop --head "$LINE" \
+            --title "chore: sync ${TAG} release notes back to develop" \
+            --body "$(cat <<EOF
+          Back-merge so develop carries the \`${TAG}\` changelog entry and does
+          not drift from main.
+
+          Open this one **after** the release pull request into main has merged.
+          EOF
+          )"
+
+      - name: Summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Prepared ${TAG}
+
+          - Maintenance branch \`${LINE}\` (${{ steps.branch.outputs.created == 'true' && 'created' || 'reused' }})
+          - Changelog updated
+          - Pull requests opened into \`main\` and \`develop\`
+
+          Merging the main pull request tags \`${TAG}\` and publishes the images.
+          EOF

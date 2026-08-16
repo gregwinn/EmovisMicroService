@@ -1,0 +1,119 @@
+name: Release · Tag
+
+# Tags main once a release lands there.
+#
+# Tagging is deliberately separated from preparing. A tag on this repository
+# means "this is on main" — never "this was proposed once and abandoned". The
+# only way to create one is to merge a release into main.
+#
+# The version is read from CHANGELOG.md rather than the branch name or the
+# commit message, because the changelog is the thing a human actually reviewed
+# in the pull request.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag the release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # A tag pushed with the default GITHUB_TOKEN cannot start another
+          # workflow — GitHub blocks that to prevent recursion — so the image
+          # publish would never fire. RELEASE_TOKEN is a PAT or GitHub App
+          # token that can. Without it this job still tags, and the publish has
+          # to be started by hand.
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - name: Read the version from the changelog
+        id: version
+        run: |
+          set -euo pipefail
+
+          version=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md \
+                    | tr -d '#[] ' || true)
+
+          if [[ -z "$version" ]]; then
+            echo "::error::No released version heading found in CHANGELOG.md."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version"    >> "$GITHUB_OUTPUT"
+
+      # Every push to main runs this workflow, and most of them are not
+      # releases. An existing tag is the signal that this commit's version has
+      # already shipped, so the job stops rather than failing.
+      - name: Has this version already been tagged?
+        id: check
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "::notice::${{ steps.version.outputs.tag }} already exists — nothing to do."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag and push
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "${{ steps.version.outputs.tag }}" \
+            -m "${{ steps.version.outputs.tag }}" \
+            -m "Released from main by ${{ github.workflow }}. See CHANGELOG.md."
+
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Publish the GitHub release
+        if: steps.check.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Notes come straight from the changelog section a human reviewed.
+          python3 - <<'PY' > notes.md
+          import re, pathlib
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          m = re.search(r"## \[[0-9]+\.[0-9]+\.[0-9]+\][^\n]*\n(.*?)(?=\n## \[|\n\[Unreleased\]:)", text, re.S)
+          print((m.group(1).strip() if m else "See CHANGELOG.md."))
+          PY
+
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes-file notes.md
+
+      - name: Summary
+        run: |
+          if [[ "${{ steps.check.outputs.needed }}" == "true" ]]; then
+            echo "### Tagged ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+            if [[ -z "${{ secrets.RELEASE_TOKEN }}" ]]; then
+              cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+
+          > ⚠️ Tagged with the default `GITHUB_TOKEN`, which cannot start another
+          > workflow. **The image publish did not run.** Start it manually, or add
+          > a `RELEASE_TOKEN` secret so tags trigger it automatically.
+          EOF
+            else
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "Image publish triggered." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "### No release to tag" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`${{ steps.version.outputs.tag }}\` already exists — this push was not a release." >> "$GITHUB_STEP_SUMMARY"
+          fi
