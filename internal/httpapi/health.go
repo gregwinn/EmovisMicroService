@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/gregwinn/EmovisMicroService/internal/platform/health"
@@ -21,13 +22,25 @@ func handleLive() http.HandlerFunc {
 
 // handleReady answers the readiness probe by evaluating every registered
 // dependency check, returning 503 when any of them is down.
-func handleReady(checker *health.Checker) http.HandlerFunc {
+func handleReady(checker *health.Checker, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		report := checker.Ready(r.Context())
 
 		status := http.StatusOK
 		if report.Status != health.StatusUp {
 			status = http.StatusServiceUnavailable
+
+			// The caller is told only "unavailable". The error naming the host,
+			// port, and credentials goes here instead, where access is
+			// controlled.
+			for name, result := range report.Checks {
+				if result.Status == health.StatusUp {
+					continue
+				}
+				logger.WarnContext(r.Context(), "readiness check failed",
+					slog.String("check", name),
+					slog.String("error", result.Detail))
+			}
 		}
 
 		writeJSON(w, status, report)

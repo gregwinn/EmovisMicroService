@@ -157,7 +157,7 @@ func (r Rules) validateType(raw string) (string, *RuleError) {
 		// unauthenticated endpoint into a configuration disclosure.
 		return "", &RuleError{
 			Field:  "transaction_type",
-			Reason: fmt.Sprintf("unrecognized value %q", raw),
+			Reason: fmt.Sprintf("unrecognized value %q", truncate(raw, maxEchoedValueLength)),
 		}
 	}
 
@@ -280,6 +280,21 @@ func validateIdentity(s Submission) (*Plate, *Transponder, *RuleError) {
 	}
 
 	return plate, transponder, nil
+}
+
+// maxEchoedValueLength bounds any producer value repeated back in an error.
+//
+// The contract puts no maxLength on transaction_type, so a producer can send
+// megabytes of it. Echoing that verbatim turns a rejection into a reflection:
+// a 4 MB request produced a 4 MB error response before this existed. The body
+// limit bounds it too, but an error message should be readable regardless.
+const maxEchoedValueLength = 64
+
+func truncate(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "…"
 }
 
 func (r Rules) now() time.Time {

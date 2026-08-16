@@ -30,11 +30,24 @@ const (
 type Check func(ctx context.Context) error
 
 // Result is the outcome of one named check.
+//
+// The split between Reason and Detail is deliberate. Readiness is served on an
+// unauthenticated endpoint, and a driver error carries the database host, port,
+// user, and database name — in production, the RDS endpoint. That is
+// infrastructure topology, and there is no reason to publish it to anyone who
+// can reach the probe. The caller gets a safe summary; the operator gets the
+// real error in the logs.
 type Result struct {
 	Status  Status `json:"status"`
-	Error   string `json:"error,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 	Latency string `json:"latency"`
+
+	// Detail is the underlying error, for logging only. Never serialized.
+	Detail string `json:"-"`
 }
+
+// reasonUnavailable is all a caller is told about a failed dependency.
+const reasonUnavailable = "unavailable"
 
 // Report is the aggregate readiness of the process.
 type Report struct {
@@ -100,7 +113,8 @@ func (c *Checker) Ready(ctx context.Context) Report {
 			}
 			if err != nil {
 				result.Status = StatusDown
-				result.Error = err.Error()
+				result.Reason = reasonUnavailable
+				result.Detail = err.Error()
 			}
 
 			mu.Lock()

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -66,6 +67,21 @@ func specValidator(spec *openapi3.T, logger *slog.Logger, recorder *metrics.Metr
 			r *http.Request,
 			opts nethttpmiddleware.ErrorHandlerOpts,
 		) {
+			// An oversized body surfaces here, because the validator is the
+			// first thing to read it. "Payload too large" is a far more useful
+			// answer to the producer than a schema complaint about a body that
+			// was truncated mid-read.
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				logger.LogAttrs(ctx, slog.LevelWarn, "request body exceeded the limit",
+					slog.String("request_id", middleware.RequestIDFrom(ctx)),
+					slog.Int64("limit_bytes", tooLarge.Limit))
+
+				writeError(w, http.StatusRequestEntityTooLarge, "request body is too large",
+					[]FieldError{{Field: "body", Reason: fmt.Sprintf("must not exceed %d bytes", tooLarge.Limit)}})
+				return
+			}
+
 			status := opts.StatusCode
 			if status == 0 {
 				status = http.StatusBadRequest
