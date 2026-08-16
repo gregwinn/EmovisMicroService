@@ -11,6 +11,34 @@ small the diff is.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-08-16
+
+Security hardening found by probing the running service, plus the diagrams and
+release tooling built alongside it.
+
+### Fixed
+
+- **Request bodies are now capped at 1 MiB.** A 61 MB body was previously
+  accepted with a `201`, cost roughly twice that in heap, and was stored
+  permanently. Over the limit is now a `413` naming the limit.
+- **Producer-supplied metric labels are bounded.** `source` reached Prometheus
+  unbounded, so 300 distinct values produced 302 series — a memory-exhaustion
+  vector on an endpoint the contract declares unauthenticated. Distinct values
+  now cap at 200; the rest collapse into `other`.
+- **Rejections no longer echo an unbounded value.** The contract sets no
+  `maxLength` on `transaction_type`, so a 4 MB value came back verbatim in the
+  error. Echoed values are truncated.
+- **`/readyz` no longer publishes infrastructure detail.** It returned the raw
+  driver error, naming the database host, port, user, and database. Callers now
+  get `unavailable`; the detail goes to the logs.
+
+### Added
+
+- `docs/flows.md` — the service in ten diagrams, opening with the happy path.
+- A release pipeline: `Release · Prepare` cuts a release from `develop` and
+  `Release · Tag` tags it when the pull request into `main` merges.
+
+
 ## [0.1.0] — 2026-08-15
 
 First release. Implements the `Transaction Ingest API` contract end to end.
@@ -79,5 +107,6 @@ Each is a deliberate scope call, documented in
 - **No OpenTelemetry tracing.**
 - **Nothing deployed.** The Terraform is validated, not applied.
 
-[Unreleased]: https://github.com/gregwinn/EmovisMicroService/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/gregwinn/EmovisMicroService/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/gregwinn/EmovisMicroService/releases/tag/v0.1.1
 [0.1.0]: https://github.com/gregwinn/EmovisMicroService/releases/tag/v0.1.0

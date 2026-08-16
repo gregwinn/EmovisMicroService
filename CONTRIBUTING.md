@@ -79,6 +79,16 @@ than overwritten.
 The maintenance branch is `release/0.2.x`, not `release/0.2.0`, precisely
 because patches accumulate on it — the name stays true.
 
+### If you fork this, or set it up fresh
+
+GitHub only registers a `workflow_dispatch` workflow once it exists on the
+**default branch**. Until `release-prepare.yml` is on `main`, it will not appear
+in the Actions tab — which is a chicken-and-egg, because getting it there is
+what it does.
+
+Break the loop once with a manual `develop` → `main` pull request. After that
+every release is a button press.
+
 ### One setup note
 
 Tags pushed with the default `GITHUB_TOKEN` **cannot start another workflow**.
